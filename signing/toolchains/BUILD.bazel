@@ -1,0 +1,14 @@
+toolchain_type(
+    name = "cosign_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+toolchain_type(
+    name = "osslsigncode_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+toolchain_type(
+    name = "openssl_toolchain_type",
+    visibility = ["//visibility:public"],
+)
