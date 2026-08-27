@@ -1,0 +1,8 @@
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "sign_codesign.sh",
+    "sign_osslsigncode.sh",
+    "stamp.sh"
+    "gen_cert.sh"
+])
