@@ -4,6 +4,7 @@ module(
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "rules_python", version = "1.7.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
 bazel_dep(name = "openssl", version = "4.0.1.bcr.0")
@@ -13,6 +14,16 @@ bazel_dep(name = "rules_img", version = "0.3.19")
 
 bazel_dep(name = "windows_support", version = "0.3.0")
 bazel_dep(name = "codesign.bzl", version = "0.0.13")
+
+signing_tools = use_extension("//signing:extensions.bzl", "signing_tools")
+use_repo(
+    signing_tools,
+    "signing_cosign",
+    "signing_osslsigncode",
+    "signing_openssl",
+)
+
+register_toolchains("//signing/toolchains:registered_osslsigncode_toolchain")
 
 # signtool : From windows_support
 # cosign : https://github.com/sigstore/cosign/releases

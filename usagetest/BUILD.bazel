@@ -1,0 +1,21 @@
+load("@rules_signing//signing:defs.bzl", "sign")
+
+genrule(
+    name = "unsigned_outputs",
+    outs = [
+        "bin/app.exe",
+        "docs/readme.txt",
+        "nested/a/b/guide.txt",
+    ],
+    cmd = """
+      mkdir -p $(@D)/bin $(@D)/docs $(@D)/nested/a/b
+      printf 'consumer exe\\n' > $(@D)/bin/app.exe
+      printf 'consumer docs\\n' > $(@D)/docs/readme.txt
+      printf 'consumer nested\\n' > $(@D)/nested/a/b/guide.txt
+    """,
+)
+
+sign(
+    name = "signed_outputs",
+    src = ":unsigned_outputs",
+)

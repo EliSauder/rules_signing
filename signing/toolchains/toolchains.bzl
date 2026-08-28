@@ -1,19 +1,18 @@
 def _cosign_toolchain_impl(ctx):
-    cosign = ctx.executable.cosign
+    tool = ctx.file.cosign
     return [
         platform_common.ToolchainInfo(
-            name = ctx.label.name,
-            _cosign = cosign,
+            tool = tool,
+            data = depset([tool]),
         ),
-        DefaultInfo(files = depset([cosign])),
+        DefaultInfo(files = depset([tool])),
     ]
 
 cosign_toolchain = rule(
     implementation = _cosign_toolchain_impl,
     attrs = {
         "cosign": attr.label(
-            cfg = "exec",
-            executable = True,
+            allow_single_file = True,
             mandatory = True,
         ),
     },
@@ -21,43 +20,43 @@ cosign_toolchain = rule(
 )
 
 def _osslsigncode_toolchain_impl(ctx):
-    osslsigncode = ctx.executable.osslsigncode
+    tool = ctx.file.osslsigncode
     return [
         platform_common.ToolchainInfo(
-            name = ctx.label.name,
-            _osslsigncode = osslsigncode,
+            tool = tool,
+            data = depset([tool]),
+            default_timestamp_url = ctx.attr.default_timestamp_url,
         ),
-        DefaultInfo(files = depset([osslsigncode])),
+        DefaultInfo(files = depset([tool])),
     ]
 
 osslsigncode_toolchain = rule(
     implementation = _osslsigncode_toolchain_impl,
     attrs = {
         "osslsigncode": attr.label(
-            cfg = "exec",
-            executable = True,
+            allow_single_file = True,
             mandatory = True,
         ),
+        "default_timestamp_url": attr.string(default = ""),
     },
     provides = [platform_common.ToolchainInfo],
 )
 
 def _openssl_toolchain_impl(ctx):
-    openssl = ctx.executable.openssl
+    tool = ctx.file.openssl
     return [
         platform_common.ToolchainInfo(
-            name = ctx.label.name,
-            _openssl = openssl,
+            tool = tool,
+            data = depset([tool]),
         ),
-        DefaultInfo(files = depset([openssl])),
+        DefaultInfo(files = depset([tool])),
     ]
 
 openssl_toolchain = rule(
     implementation = _openssl_toolchain_impl,
     attrs = {
         "openssl": attr.label(
-            cfg = "exec",
-            executable = True,
+            allow_single_file = True,
             mandatory = True,
         ),
     },

@@ -1,8 +1,24 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 package(default_visibility = ["//visibility:public"])
+
+py_library(
+    name = "sign_tool_lib",
+    srcs = ["sign_tool.py"],
+)
+
+py_binary(
+    name = "sign_tool",
+    srcs = ["sign_tool.py"],
+    main = "sign_tool.py",
+    deps = [":sign_tool_lib"],
+)
 
 exports_files([
     "sign_codesign.sh",
+    "sign_cosign_blob.sh",
+    "sign_cosign_oci.sh",
     "sign_osslsigncode.sh",
-    "stamp.sh"
-    "gen_cert.sh"
+    "sign_tree.sh",
+    "stamp.sh",
+    "gen_cert.sh",
 ])

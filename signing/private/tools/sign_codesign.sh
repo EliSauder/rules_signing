@@ -38,7 +38,10 @@ for kv in "${defaults_kv[@]:-}"; do [ -n "$kv" ] && stamp_default "$kv"; done
 
 tmp="$(mktemp -d)"
 kc=""
-cleanup() { [ -n "$kc" ] && security delete-keychain "$kc" 2>/dev/null || true; rm -rf "$tmp"; }
+cleanup() {
+  [ -n "$kc" ] && security delete-keychain "$kc" 2>/dev/null || true
+  rm -rf "$tmp"
+}
 trap cleanup EXIT
 
 passthrough() {

@@ -1,3 +1,5 @@
+load("//signing:providers.bzl", "SigningCertificateInfo")
+
 def default_out(ctx, src):
     if ctx.attr.out:
         return ctx.attr.out
@@ -12,22 +14,16 @@ def cert_info(ctx):
         return None
     return ctx.attr.certificate[SigningCertificateInfo]
 
-def run_signer(ctx, script, toolchain, source, out, args, extra_inputs, mnemonic, progress):
-    inputs = [src, script]
-    inputs.extend(extra_inputs)
-    ctx.actions.run_shell(
-        inputs = depset(inputs),
-        outputs = [out],
-        command = 'exec bash "{}" "$@"'.format(script.path),
-        arguments = [args],
-        mnemonic = mnemonic,
-        progress_message = "{} {}".format(progress, src.short_path),
-        use_default_shell_env = True,
-    )
+def cert_needs_stamp(info):
+    if info == None:
+        return False
+    for v in [info.cert, info.password, info.identity]:
+        if v and "{" in v:
+            return True
+    return False
 
 def add_cert_args(ctx, args, info):
-    extra = [ctx.file._stamp_lib]
-    args.add("--stamp-lib", ctx.file._stamp_lib)
+    extra = []
 
     if info == None:
         return extra
@@ -55,10 +51,3 @@ def add_cert_args(ctx, args, info):
         extra.append(ctx.version_file)
 
     return extra
-
-STAMP_LIB_ATTR = {
-    "_stamp_lib": attr.label(
-        default = "//signing/private/tools:stamp.sh",
-        allow_single_file = True,
-    ),
-}

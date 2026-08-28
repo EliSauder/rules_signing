@@ -1,52 +1,47 @@
-def _signing_certificate_impl(ctx):
-    cert_file = None
-    cert_type = ""
-    password = ctx.attr.password
+load("//signing:providers.bzl", "SigningCertificateInfo")
 
+def _certificate_impl(ctx):
+    cert_file = ctx.file.certificate_file
     return [
-        DefaultInfo(files = depset([x for x in [ctx.file.certificate_file] if x != None)),
+        DefaultInfo(files = depset([cert_file] if cert_file else [])),
         SigningCertificateInfo(
-            certificate = ctx.attr.certificate,
-            certificate_encoding = ctx.attr.certificate_encoding,
-            certificate_file = ctx.attr.certificate_file,
-            certificate_file_type = ctx.attr.certificate_file_type,
+            certificate = cert_file,
+            cert = ctx.attr.certificate,
+            cert_encoding = ctx.attr.certificate_encoding,
             password = ctx.attr.password,
             password_env = ctx.attr.password_env,
             identity = ctx.attr.identity,
             stamp_defaults = ctx.attr.stamp_defaults,
-        )
+        ),
     ]
 
-signing_certificate = rule(
-    implementation = _signing_certificate_impl,
-    doc = "Produces a SigningCertificateInfo for use by sign().",
+certificate = rule(
+    implementation = _certificate_impl,
+    doc = "Produces SigningCertificateInfo for signing rules.",
     attrs = {
         "certificate": attr.string(
-            doc = "Cert template with optional {KEY} placeholders. Empty => passthrough.",
+            doc = "Certificate/key template with optional {KEY} placeholders.",
         ),
         "certificate_encoding": attr.string(
             default = "path",
             values = ["path", "base64"],
+            doc = "How to interpret `certificate` when provided.",
         ),
         "certificate_file": attr.label(
-            allow_single_file = [".p12", ".pfx", ".pem"],
+            allow_single_file = [".p12", ".pfx", ".pem", ".key"],
+            doc = "Static certificate/key file.",
         ),
-        "certificate_file_type": attr.string(
-            default = "pkcs12",
-            values = ["pkcs12", "pem"],
+        "password": attr.string(
+            doc = "Optional password template with {KEY} placeholders.",
         ),
-        "password": attr.string(doc = "Cert password; may contain {KEY} placeholders."),
-        "password_env": attr.string(doc = "Env var name holding the cert password."),
-        "identity": attr.string(doc = "Apple codesign identity; may contain {KEY}."),
+        "password_env": attr.string(
+            doc = "Optional env var name holding the cert password.",
+        ),
+        "identity": attr.string(
+            doc = "Optional Apple codesign identity template with {KEY} placeholders.",
+        ),
         "stamp_defaults": attr.string_dict(
-            doc = "Default values keyed by stamp name for unresolved {KEY}s.",
-        ),
-        "_gen_cert": attr.label(
-            default = "//signing/private/tools:gen_cert.sh",
-            allow_single_file = True,
+            doc = "Fallback map for unresolved {KEY} placeholders.",
         ),
     },
-    toolchains = [
-        config_common.toolchain_type(OPENSSL_TOOLCHAIN_TYPE, mandatory = False),
-    ],
 )

@@ -1,0 +1,112 @@
+load("//signing:defs.bzl", "sign", "certificate")
+load("@rules_python//python:defs.bzl", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "unsigned_files",
+    srcs = glob(["testdata_sign/**"]),
+)
+
+filegroup(
+    name = "unsigned_text_files",
+    srcs = glob(["testdata_sign/docs/**"]),
+)
+
+certificate(
+    name = "cert_empty",
+)
+
+certificate(
+    name = "cert_template_path",
+    certificate = "{CERT_PATH}",
+    certificate_encoding = "path",
+    password = "{CERT_PASSWORD}",
+    password_env = "RULES_SIGNING_CERT_PASSWORD",
+    identity = "{CODESIGN_IDENTITY}",
+    stamp_defaults = {
+        "CERT_PATH": "/definitely/missing/cert.p12",
+        "CERT_PASSWORD": "default-password",
+        "CODESIGN_IDENTITY": "",
+    },
+)
+
+certificate(
+    name = "cert_template_base64",
+    certificate = "{CERT_B64}",
+    certificate_encoding = "base64",
+    stamp_defaults = {
+        "CERT_B64": "ZmFrZS1jZXJ0LWNvbnRlbnQ=",
+    },
+)
+
+sign(
+    name = "signed_default",
+    src = ":unsigned_files",
+)
+
+sign(
+    name = "signed_out_override",
+    src = ":unsigned_files",
+    out = "custom_signed_output",
+)
+
+sign(
+    name = "signed_force_osslsigncode",
+    src = ":unsigned_files",
+    tool = "osslsigncode",
+)
+
+sign(
+    name = "signed_with_cert_template_path",
+    src = ":unsigned_text_files",
+    certificate = ":cert_template_path",
+    timestamp_url = "https://timestamp.example.invalid",
+    description = "rules_signing test description",
+    url = "https://example.invalid/publisher",
+)
+
+sign(
+    name = "signed_with_cert_template_base64",
+    src = ":unsigned_text_files",
+    certificate = ":cert_template_base64",
+    options = ["runtime", "library"],
+    entitlements = "testdata/entitlements.plist",
+)
+
+sign(
+    name = "signed_with_empty_certificate",
+    src = ":unsigned_text_files",
+    certificate = ":cert_empty",
+)
+
+py_test(
+    name = "sign_tool_unit_test",
+    srcs = ["sign_tool_unit_test.py"],
+    size = "small",
+    deps = ["//signing/private/tools:sign_tool_lib"],
+)
+
+py_test(
+    name = "sign_integration_test",
+    srcs = ["sign_integration_test.py"],
+    size = "small",
+    data = [
+        ":unsigned_files",
+        ":unsigned_text_files",
+        ":signed_default",
+        ":signed_out_override",
+        ":signed_force_osslsigncode",
+        ":signed_with_cert_template_path",
+        ":signed_with_cert_template_base64",
+        ":signed_with_empty_certificate",
+    ],
+    args = [
+        "$(rootpath :signed_default)::signing/tests/testdata_sign",
+        "$(rootpath :signed_out_override)::signing/tests/testdata_sign",
+        "$(rootpath :signed_force_osslsigncode)::signing/tests/testdata_sign",
+        "$(rootpath :signed_with_cert_template_path)::signing/tests/testdata_sign/docs",
+        "$(rootpath :signed_with_cert_template_base64)::signing/tests/testdata_sign/docs",
+        "$(rootpath :signed_with_empty_certificate)::signing/tests/testdata_sign/docs",
+    ],
+)

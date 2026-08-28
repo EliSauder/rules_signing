@@ -6,7 +6,7 @@ openssl_bin="openssl"
 out=""
 subject="/CN=rules_signing dev"
 days="825"
-password="changeit"
+password=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -19,6 +19,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+[ -n "$out" ] || { echo "gen_cert: --out is required" >&2; exit 2; }
 case "$subject" in /*) : ;; *) subject="/$subject" ;; esac
 
 tmp="$(mktemp -d)"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Windows PE signer. Dispatches to signtool or osslsigncode based on --flavor.
+# Windows PE signer wrapper around osslsigncode.
 # If nothing resolves, copies input -> output unchanged (passthrough).
 set -euo pipefail
 
@@ -42,7 +42,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 passthrough() {
   echo "sign_pe: $1; passing through unsigned." >&2
-  cp "$infile" "$outfile"
+  cp -L "$infile" "$outfile"
   exit 0
 }
 
