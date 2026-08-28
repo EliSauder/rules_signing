@@ -36,7 +36,7 @@ def _detect(src):
         if s.endswith(ext)
             return "codesign"
 
-def _sign_files(name, visibility, di, tool, certificate, **kwargs):
+def _sign_files(ctx, di):
     for f in di.files:
         t = tool
         if t == "auto":
@@ -59,15 +59,14 @@ def _sign_files(name, visibility, di, tool, certificate, **kwargs):
         else:
             fail("unknown signing tool {}".format(t))
 
-def _sign_impl(name, visibility, src, tool, certificate):
-    if DefaultInfo in src:
-        di = src[DefaultInfo]
-        _sign_files(name, visibility, src, tool, certificate):
+def _sign_impl(ctx):
+    if DefaultInfo in ctx.attr.src:
+        di = ctx.attr.src[DefaultInfo]
+        return _sign_files(ctx, di):
 
-    if tool == "auto":
-        tool = _detect(src.path if tool == "auto" else name)
+    fail("unsupported provider types for {}".format(ctx.attr.name))
 
-sign = macro(
+sign = rule(
     implementation = _sign_impl,
     attrs = {
         src = attr.label(
