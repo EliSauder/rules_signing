@@ -47,10 +47,56 @@ def _host_platform(ctx):
 
     return "{}_{}".format(os_key, arch_key), os_key == "windows"
 
-def _emit_filegroup_build(name, src):
+_OS_CONSTRAINT = {
+    "linux": "@platforms//os:linux",
+    "darwin": "@platforms//os:macos",
+    "windows": "@platforms//os:windows",
+}
+
+_CPU_CONSTRAINT = {
+    "amd64": "@platforms//cpu:x86_64",
+    "arm64": "@platforms//cpu:aarch64",
+    "arm": "@platforms//cpu:armv7",
+}
+
+def _exec_constraints(host):
+    os_key, _, arch_key = host.partition("_")
+    constraints = []
+    if os_key in _OS_CONSTRAINT:
+        constraints.append(_OS_CONSTRAINT[os_key])
+    if arch_key in _CPU_CONSTRAINT:
+        constraints.append(_CPU_CONSTRAINT[arch_key])
+    return constraints
+
+def _emit_toolchain_build(name, src, host, rule_name, toolchain_type):
+    """Emits a BUILD file exposing the tool plus a registrable toolchain.
+
+    The toolchain lives in the generated repository rather than in
+    //signing/toolchains so that this module never has to reference these
+    repositories itself. That keeps the tool repositories opt-in: downstream
+    consumers declare and register their own, and nothing is forced on them.
+    """
+    constraints = _exec_constraints(host)
     return "\n".join([
+        'load("{}", "{}")'.format(str(Label("//signing/toolchains:toolchains.bzl")), rule_name),
+        "",
         'package(default_visibility = ["//visibility:public"])',
+        "",
         'filegroup(name = "{n}_file", srcs = ["{s}"])'.format(n = name, s = src),
+        "",
+        "{r}(".format(r = rule_name),
+        '    name = "{n}_toolchain_impl",'.format(n = name),
+        '    {n} = ":{n}_file",'.format(n = name),
+        ")",
+        "",
+        "toolchain(",
+        '    name = "{n}_toolchain",'.format(n = name),
+        "    exec_compatible_with = [{}],".format(
+            ", ".join(['"{}"'.format(c) for c in constraints]),
+        ),
+        '    toolchain = ":{n}_toolchain_impl",'.format(n = name),
+        '    toolchain_type = "{}",'.format(str(Label(toolchain_type))),
+        ")",
         "",
     ])
 
@@ -78,7 +124,13 @@ def _cosign_repo_impl(ctx):
         executable = True,
         sha256 = _trim_sha256_prefix(sha),
     )
-    ctx.file("BUILD.bazel", _emit_filegroup_build("cosign", out))
+    ctx.file("BUILD.bazel", _emit_toolchain_build(
+        name = "cosign",
+        src = out,
+        host = host,
+        rule_name = "cosign_toolchain",
+        toolchain_type = "//signing/toolchains:cosign_toolchain_type",
+    ))
 
 cosign_repo = repository_rule(
     implementation = _cosign_repo_impl,
@@ -123,7 +175,13 @@ def _osslsigncode_repo_impl(ctx):
     )
 
     bin_name = "osslsigncode.exe" if windows else "osslsigncode"
-    ctx.file("BUILD.bazel", _emit_filegroup_build("osslsigncode", bin_name))
+    ctx.file("BUILD.bazel", _emit_toolchain_build(
+        name = "osslsigncode",
+        src = bin_name,
+        host = host,
+        rule_name = "osslsigncode_toolchain",
+        toolchain_type = "//signing/toolchains:osslsigncode_toolchain_type",
+    ))
 
 osslsigncode_repo = repository_rule(
     implementation = _osslsigncode_repo_impl,
@@ -133,38 +191,5 @@ osslsigncode_repo = repository_rule(
         "urls": attr.string_dict(default = {}),
         "sha256": attr.string_dict(default = {}),
         "strip_prefix": attr.string_dict(default = {}),
-    },
-)
-
-def _openssl_local_impl(ctx):
-    binpath = ctx.path(ctx.attr.path)
-    if not binpath.exists:
-        fail("openssl path '{}' does not exist".format(ctx.attr.path))
-
-    ctx.symlink(binpath, "openssl")
-    ctx.file("BUILD.bazel", _emit_filegroup_build("openssl", "openssl"))
-
-openssl_local_repo = repository_rule(
-    implementation = _openssl_local_impl,
-    attrs = {
-        "path": attr.string(mandatory = True),
-    },
-)
-
-def _openssl_label_impl(ctx):
-    ctx.file("BUILD.bazel", "\n".join([
-        'package(default_visibility = ["//visibility:public"])',
-        'alias(name = "openssl", actual = "{s}")'.format(s = ctx.attr.label),
-        "",
-    ]))
-
-openssl_label_repo = repository_rule(
-    implementation = _openssl_label_impl,
-    attrs = {
-        "label": attr.label(
-            cfg = "exec",
-            executable = True,
-            mandatory = True,
-        ),
     },
 )

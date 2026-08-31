@@ -1,4 +1,5 @@
 load("@rules_signing//signing:defs.bzl", "sign")
+load("@rules_oci//oci:defs.bzl", "oci_image")
 
 genrule(
     name = "unsigned_outputs",
@@ -18,4 +19,15 @@ genrule(
 sign(
     name = "signed_outputs",
     src = ":unsigned_outputs",
+)
+
+oci_image(
+    name = "unsigned_oci_image",
+    os = "linux",
+    architecture = "amd64",
+)
+
+sign(
+    name = "signed_oci_image",
+    src = ":unsigned_oci_image",
 )

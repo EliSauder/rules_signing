@@ -4,4 +4,24 @@ module(
 )
 
 bazel_dep(name = "rules_signing", version = "0.0.1")
+bazel_dep(name = "rules_oci", version = "2.3.0")
 local_path_override(module_name = "rules_signing", path = "..")
+
+# rules_signing registers no signing toolchains of its own, so a consumer picks
+# its tool versions and registers them explicitly.
+signing_tools = use_extension("@rules_signing//signing:extensions.bzl", "signing_tools")
+use_repo(
+    signing_tools,
+    "signing_cosign",
+    "signing_osslsigncode",
+)
+
+register_toolchains(
+    "@signing_osslsigncode//:osslsigncode_toolchain",
+    "@signing_cosign//:cosign_toolchain",
+)
+
+# Apple signing is optional; register it only if you sign Mach-O/bundle outputs.
+bazel_dep(name = "codesign.bzl", version = "0.0.13")
+
+register_toolchains("@codesign.bzl//toolchain:all")

@@ -1,4 +1,6 @@
-load(":toolchains.bzl", "osslsigncode_toolchain")
+# Only toolchain types are declared here. Concrete toolchains are created by
+# the tool repositories (see repositories.bzl) so that this module never
+# depends on them: downstream consumers declare and register their own.
 
 toolchain_type(
     name = "cosign_toolchain_type",
@@ -10,19 +12,4 @@ toolchain_type(
     visibility = ["//visibility:public"],
 )
 
-toolchain_type(
-    name = "openssl_toolchain_type",
-    visibility = ["//visibility:public"],
-)
-
-osslsigncode_toolchain(
-    name = "osslsigncode_toolchain_impl",
-    osslsigncode = "@signing_osslsigncode//:osslsigncode_file",
-)
-
-toolchain(
-    name = "registered_osslsigncode_toolchain",
-    toolchain = ":osslsigncode_toolchain_impl",
-    toolchain_type = ":osslsigncode_toolchain_type",
-    visibility = ["//visibility:public"],
-)
+exports_files(["toolchains.bzl"])

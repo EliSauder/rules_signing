@@ -6,6 +6,7 @@ load(
 load("//signing:providers.bzl", "SigningCertificateInfo")
 
 _OSSLSIGNCODE_TOOLCHAIN = "//signing/toolchains:osslsigncode_toolchain_type"
+_COSIGN_TOOLCHAIN = "//signing/toolchains:cosign_toolchain_type"
 _CODESIGN_TOOLCHAIN = "@codesign.bzl//toolchain:toolchain_type"
 
 _OSSLSIGNCODE_EXT = [
@@ -34,37 +35,77 @@ _CODESIGN_EXT = [
     ".dmg",
 ]
 
-def _detect_tool(path):
-    p = path.lower()
+def _detect_tool(src):
+    p = src.short_path.lower()
     for ext in _OSSLSIGNCODE_EXT:
         if p.endswith(ext):
             return "osslsigncode"
     for ext in _CODESIGN_EXT:
         if p.endswith(ext):
             return "codesign"
-    return ""
+    return "cosign"
+
+def _has_known_extension(src):
+    p = src.short_path.lower()
+    for ext in _OSSLSIGNCODE_EXT + _CODESIGN_EXT:
+        if p.endswith(ext):
+            return True
+
+    # A basename with no dot cannot be classified by extension at all.
+    basename = p.rpartition("/")[2]
+    return "." in basename
 
 def _needs_toolchain(srcs, selected_tool, tool_kind):
     if selected_tool == tool_kind:
         return True
     if selected_tool != "auto":
         return False
+
+    # cosign is the universal fallback in auto mode: anything without a native
+    # signer is signed with a detached cosign signature, so it must always be
+    # present.
+    if tool_kind == "cosign":
+        return True
+
     for f in srcs:
-        if _detect_tool(f.short_path) == tool_kind:
+        # Directory artifact contents are only available at execution time, so
+        # require every native signer: an ordinary directory may hold nested
+        # exe/dll files needing osslsigncode, or Mach-O binaries and nested
+        # .app/.dmg/.pkg bundles needing codesign.
+        if f.is_directory:
+            return True
+
+        # Extensionless files are classified by sniffing their header at
+        # execution time, which analysis cannot do, so both native signers must
+        # be available. This is common for Mach-O binaries on macOS.
+        if not _has_known_extension(f):
+            return True
+
+        if _detect_tool(f) == tool_kind:
             return True
     return False
 
+def _codesign_tool_file(codesign_tc):
+    """Returns the codesign executable File from the codesign.bzl toolchain.
+
+    codesign.bzl exposes ToolchainInfo(codesign = <File>) directly, but other
+    toolchain implementations expose a `tool` field, so both are supported.
+    """
+    if codesign_tc == None:
+        return None
+    return codesign_tc.codesign
+
 def _sign_impl(ctx):
-    srcs = sorted(ctx.attr.src[DefaultInfo].files.to_list(), key = lambda f: f.short_path)
+    srcs = ctx.attr.src[DefaultInfo].files.to_list()
     out_name = ctx.attr.out if ctx.attr.out else "{}.signed".format(ctx.label.name)
     out_dir = ctx.actions.declare_directory(out_name)
     cert = cert_info(ctx)
 
     args = ctx.actions.args()
-    args.add("--mode", "tree")
     args.add("--out-dir", out_dir.path)
     args.add("--tool", ctx.attr.tool)
 
+    # Get osslsigncode toolchain details
     osslsigncode_tc = ctx.toolchains[_OSSLSIGNCODE_TOOLCHAIN]
     needs_osslsigncode = _needs_toolchain(srcs, ctx.attr.tool, "osslsigncode")
     if needs_osslsigncode and (osslsigncode_tc == None or not hasattr(osslsigncode_tc, "tool")):
@@ -72,20 +113,29 @@ def _sign_impl(ctx):
     osslsigncode_tool = osslsigncode_tc.tool.path if osslsigncode_tc and hasattr(osslsigncode_tc, "tool") else ""
     args.add("--osslsigncode-tool", osslsigncode_tool)
 
+    # Get cosign toolchain details
+    cosign_tc = ctx.toolchains[_COSIGN_TOOLCHAIN]
+    needs_cosign = _needs_toolchain(srcs, ctx.attr.tool, "cosign")
+    if needs_cosign and (cosign_tc == None or not hasattr(cosign_tc, "tool")):
+        fail("cosign toolchain is required but was not resolved")
+    cosign_tool = cosign_tc.tool.path if cosign_tc and hasattr(cosign_tc, "tool") else ""
+    args.add("--cosign-tool", cosign_tool)
+
+    # Get codesign toolchain details
     codesign_tc = ctx.toolchains[_CODESIGN_TOOLCHAIN]
     needs_codesign = _needs_toolchain(srcs, ctx.attr.tool, "codesign")
     if needs_codesign and codesign_tc == None:
-        fail("codesign toolchain is required but was not resolved")
-    codesign_tool = ""
-    if codesign_tc != None:
-        if hasattr(codesign_tc, "codesign") and hasattr(codesign_tc.codesign, "tool"):
-            codesign_tool = codesign_tc.codesign.tool.path
-        elif hasattr(codesign_tc, "tool"):
-            codesign_tool = codesign_tc.tool.path
+        fail(
+            "codesign toolchain is required but was not resolved; register it with " +
+            "register_toolchains(\"@codesign.bzl//toolchain:all\")",
+        )
+    codesign_file = _codesign_tool_file(codesign_tc)
+    codesign_tool = codesign_file.path if codesign_file else ""
     if needs_codesign and not codesign_tool:
         fail("codesign toolchain is resolved but does not expose an executable tool")
     args.add("--codesign-tool", codesign_tool)
 
+    # Handle other args
     if ctx.attr.timestamp_url:
         args.add("--timestamp-url", ctx.attr.timestamp_url)
     if ctx.attr.description:
@@ -97,8 +147,10 @@ def _sign_impl(ctx):
     if ctx.file.entitlements:
         args.add("--entitlements", ctx.file.entitlements.path)
 
+    flatten_single_directory = len(srcs) == 1 and srcs[0].is_directory
     for f in srcs:
-        args.add("--rel", f.short_path)
+        relpath = "" if flatten_single_directory and f.is_directory else f.short_path
+        args.add("--rel", relpath)
         args.add("--src", f.path)
 
     extra_inputs = add_cert_args(ctx, args, cert)
@@ -107,13 +159,13 @@ def _sign_impl(ctx):
     if ctx.file.entitlements:
         inputs.append(ctx.file.entitlements)
 
+    # Add toolchain inputs
     if osslsigncode_tc != None and hasattr(osslsigncode_tc, "tool"):
         inputs.append(osslsigncode_tc.tool)
-    if codesign_tc != None:
-        if hasattr(codesign_tc, "codesign") and hasattr(codesign_tc.codesign, "tool"):
-            inputs.append(codesign_tc.codesign.tool)
-        elif hasattr(codesign_tc, "tool"):
-            inputs.append(codesign_tc.tool)
+    if cosign_tc != None and hasattr(cosign_tc, "tool"):
+        inputs.append(cosign_tc.tool)
+    if codesign_file:
+        inputs.append(codesign_file)
 
     ctx.actions.run(
         executable = ctx.executable._tool,
@@ -125,7 +177,10 @@ def _sign_impl(ctx):
         progress_message = "Signing output tree for {}".format(ctx.label),
     )
 
-    return [DefaultInfo(files = depset([out_dir]))]
+    return [DefaultInfo(
+        files = depset([out_dir]),
+        runfiles = ctx.attr.src[DefaultInfo].default_runfiles.merge(ctx.runfiles(files = [out_dir])),
+    )]
 
 sign = rule(
     implementation = _sign_impl,
@@ -139,7 +194,7 @@ sign = rule(
         "out": attr.string(doc = "Optional output directory artifact name."),
         "tool": attr.string(
             default = "auto",
-            values = ["osslsigncode", "codesign", "auto"],
+            values = ["osslsigncode", "codesign", "cosign", "auto"],
         ),
         "certificate": attr.label(
             providers = [[SigningCertificateInfo]],
@@ -159,7 +214,8 @@ sign = rule(
         ),
     },
     toolchains = [
-        config_common.toolchain_type(_OSSLSIGNCODE_TOOLCHAIN),
+        config_common.toolchain_type(_OSSLSIGNCODE_TOOLCHAIN, mandatory = False),
+        config_common.toolchain_type(_COSIGN_TOOLCHAIN, mandatory = False),
         config_common.toolchain_type(_CODESIGN_TOOLCHAIN, mandatory = False),
     ],
 )

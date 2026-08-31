@@ -1,8 +1,6 @@
 load(
     "//signing/toolchains:repositories.bzl",
     "cosign_repo",
-    "openssl_label_repo",
-    "openssl_local_repo",
     "osslsigncode_repo",
 )
 
@@ -18,7 +16,6 @@ def _signing_tools_impl(ctx):
 
     saw_cosign = False
     saw_osslsigncode = False
-    saw_openssl = False
 
     for mod in ctx.modules:
         for i, t in enumerate(mod.tags.cosign):
@@ -44,21 +41,6 @@ def _signing_tools_impl(ctx):
             )
             _add_dep(ctx, t, name, deps, dev_deps)
 
-        for i, t in enumerate(mod.tags.openssl):
-            saw_openssl = True
-            name = "{}_openssl_{}".format(mod.name, i)
-            if t.path:
-                openssl_local_repo(
-                    name = name,
-                    path = t.path,
-                )
-            else:
-                openssl_label_repo(
-                    name = name,
-                    label = t.label,
-                )
-            _add_dep(ctx, t, name, deps, dev_deps)
-
     if not saw_cosign:
         cosign_repo(name = "signing_cosign", version = "3.1.3")
         deps.append("signing_cosign")
@@ -67,14 +49,16 @@ def _signing_tools_impl(ctx):
         osslsigncode_repo(name = "signing_osslsigncode", version = "2.14")
         deps.append("signing_osslsigncode")
 
-    if not saw_openssl:
-        openssl_label_repo(name = "signing_openssl", label = Label("@openssl//:openssl"))
-        deps.append("signing_openssl")
-
-    return ctx.extension_metadata(
-        root_module_direct_deps = deps,
-        root_module_direct_dev_deps = dev_deps,
-    )
+    if ctx.root_module_has_non_dev_dependency and len(deps) > 0:
+        return ctx.extension_metadata(
+            root_module_direct_deps = deps,
+            root_module_direct_dev_deps = dev_deps,
+        )
+    else:
+        return ctx.extension_metadata(
+            root_module_direct_deps = [],
+            root_module_direct_dev_deps = dev_deps + deps,
+        )
 
 _cosign_tag = tag_class(attrs = {
     "version": attr.string(),
@@ -89,18 +73,10 @@ _osslsigncode_tag = tag_class(attrs = {
     "strip_prefix": attr.string_dict(doc = "host_key -> strip_prefix override."),
 })
 
-_openssl_tag = tag_class(attrs = {
-    "path": attr.string(),
-    "label": attr.label(
-        default = "@openssl//:openssl",
-    ),
-})
-
 signing_tools = module_extension(
     implementation = _signing_tools_impl,
     tag_classes = {
         "cosign": _cosign_tag,
         "osslsigncode": _osslsigncode_tag,
-        "openssl": _openssl_tag,
     },
 )

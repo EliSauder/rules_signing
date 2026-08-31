@@ -5,14 +5,18 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
-import sys
 import tempfile
+import lief
+
 from typing import Dict, Iterable, Optional, Sequence, Tuple
+
 
 _OSSLSIGNCODE_EXT = (
     ".exe",
@@ -38,13 +42,35 @@ _CODESIGN_EXT = (".app", ".pkg", ".dmg")
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 
 
-def detect_tool(path: str) -> str:
+def sniff_binary_format(path: str) -> str:
+    """Identifies Mach-O/PE binaries by content, returning a tool name or "".
+
+    Executables frequently ship without an extension (the norm for Mach-O on
+    macOS), so the filename is not a reliable signal. LIEF parses the actual
+    headers, which also avoids misreading look-alike magic numbers such as
+    Java class files sharing 0xCAFEBABE with universal Mach-O binaries.
+    """
+
+    # no try except since it is better to fail than to mistakenly sign
+    # something incorrectly.
+    if lief.is_macho(path):
+        return "codesign"
+    if lief.is_pe(path):
+        return "osslsigncode"
+    return ""
+
+
+def detect_tool(path: str, infile: Optional[str] = None) -> str:
     p = path.lower()
     if p.endswith(_OSSLSIGNCODE_EXT):
         return "osslsigncode"
     if p.endswith(_CODESIGN_EXT):
         return "codesign"
-    return ""
+    if infile:
+        sniffed = sniff_binary_format(infile)
+        if sniffed:
+            return sniffed
+    return "cosign"
 
 
 def load_stamp_files(paths: Iterable[str]) -> Dict[str, str]:
@@ -116,8 +142,28 @@ def ensure_parent(path: str) -> None:
 
 
 def passthrough(src: str, out: str) -> None:
+    """Copies contents of source to out with no modifications"""
+    if pathlib.Path(src).is_dir():
+        out_path = pathlib.Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists():
+            shutil.rmtree(out_path)
+        shutil.copytree(src, out, symlinks=True)
+        for root, dirs, files in os.walk(out):
+            for dname in dirs:
+                dpath = pathlib.Path(root) / dname
+                dpath.chmod(dpath.stat().st_mode | stat.S_IWUSR)
+            for fname in files:
+                fpath = pathlib.Path(root) / fname
+                if not fpath.is_symlink():
+                    fpath.chmod(fpath.stat().st_mode | stat.S_IWUSR)
+        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR)
+        return
     ensure_parent(out)
     shutil.copy2(src, out)
+    out_path = pathlib.Path(out)
+    if not out_path.is_symlink():
+        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR)
 
 
 def resolve_cert_path(
@@ -174,34 +220,125 @@ def resolve_identity(
     return rendered or ""
 
 
-def run_cmd(cmd: Sequence[str]) -> None:
-    subprocess.run(cmd, check=True)
+def run_cmd(cmd: Sequence[str], *, env: Optional[Dict[str, str]] = None) -> None:
+    subprocess.run(cmd, check=True, env=env)
 
-
-def run_cmd_capture(cmd: Sequence[str]) -> str:
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+def run_cmd_capture(cmd: Sequence[str], *, env: Optional[Dict[str, str]] = None) -> str:
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
     return result.stdout
 
+def sign_blob_with_cosign(
+    *,
+    tool: str,
+    infile: str,
+    outfile: str,
+    cert_path: Optional[str],
+    password: str,
+) -> None:
+    passthrough(infile, outfile)
+    if not cert_path:
+        return
+    if not tool:
+        raise ValueError("sign_tool: cosign tool path is required for detached signatures")
 
-def resolve_codesign_identity_from_keychain(keychain: str) -> str:
-    output = run_cmd_capture(["security", "find-identity", "-v", "-p", "codesigning", keychain])
-    for line in output.splitlines():
-        match = re.search(r"\)\s+([0-9A-Fa-f]{40})\s+", line)
-        if match:
-            return match.group(1)
-    raise ValueError("sign_tool: no codesigning identity found in imported certificate")
-
-
-def setup_codesign_keychain(cert_path: str, password: str, tool: str, tmpdir: str) -> Tuple[str, str]:
-    keychain = str(pathlib.Path(tmpdir) / "rules_signing.keychain")
-    run_cmd(["security", "create-keychain", "-p", "", keychain])
-    run_cmd(["security", "unlock-keychain", "-p", "", keychain])
-    import_cmd = ["security", "import", cert_path, "-k", keychain, "-T", tool]
+    env = os.environ.copy()
     if password:
-        import_cmd.extend(["-P", password])
-    run_cmd(import_cmd)
-    identity = resolve_codesign_identity_from_keychain(keychain)
-    return keychain, identity
+        env["COSIGN_PASSWORD"] = password
+    bundle_path = outfile + ".bundle.json"
+    signature = run_cmd_capture(
+        [tool, "sign-blob", "--yes", "--key", cert_path, "--bundle", bundle_path, infile],
+        env=env,
+    ).strip()
+    if not signature:
+        # cosign v3 writes the signature only into the Sigstore bundle and
+        # emits nothing on stdout, so recover it from the bundle instead.
+        signature = read_signature_from_bundle(bundle_path)
+    if not signature:
+        raise ValueError(
+            "sign_tool: cosign produced no detached signature for '{}'".format(infile)
+        )
+    pathlib.Path(outfile + ".sig").write_text(signature + "\n", encoding="utf-8")
+
+
+def read_signature_from_bundle(bundle_path: str) -> str:
+    """For oci layout images
+    cosign v3 writes the signature only into the Sigstore bundle and
+    emits nothing on stdout, get so it from the bundle instead.
+    """
+
+    path = pathlib.Path(bundle_path)
+    if not path.is_file():
+        return ""
+    try:
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return ""
+    signature = bundle.get("messageSignature", {}).get("signature", "")
+    if signature:
+        return signature
+    return bundle.get("base64Signature", "")
+
+
+def is_oci_layout(path: str) -> bool:
+    p = pathlib.Path(path)
+    return (p / "oci-layout").is_file() and (p / "index.json").is_file() and (p / "blobs").is_dir()
+
+
+def resolve_root_blob_for_index(layout_dir: str) -> pathlib.Path:
+    """Resolves the root blob of the oci layout using the mainefst digest."""
+
+    index_path = pathlib.Path(layout_dir) / "index.json"
+    index_data = json.loads(index_path.read_text(encoding="utf-8"))
+    manifests = index_data.get("manifests")
+    if not manifests:
+        raise ValueError("sign_tool: OCI layout index.json has no manifests")
+    digest = manifests[0].get("digest", "")
+    parts = digest.split(":", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError("sign_tool: unsupported OCI digest '{}'".format(digest))
+    blob = pathlib.Path(layout_dir) / "blobs" / parts[0] / parts[1]
+    if not blob.is_file():
+        raise ValueError("sign_tool: OCI blob for digest '{}' was not found".format(digest))
+    return blob
+
+
+def sign_oci_layout_with_cosign(
+    *,
+    tool: str,
+    infile: str,
+    outfile: str,
+    cert_path: Optional[str],
+    password: str,
+) -> None:
+    passthrough(infile, outfile)
+
+    if not is_oci_layout(outfile) or not cert_path:
+        return
+    if not tool:
+        raise ValueError("sign_tool: cosign tool path is required to sign OCI image layouts")
+
+    root_blob = resolve_root_blob_for_index(outfile)
+    signature_dir = pathlib.Path(outfile) / "signatures"
+    signature_dir.mkdir(parents=True, exist_ok=True)
+    bundle = signature_dir / "{}.bundle.json".format(root_blob.name)
+
+    env = os.environ.copy()
+    if password:
+        env["COSIGN_PASSWORD"] = password
+
+    run_cmd(
+        [
+            tool,
+            "sign-blob",
+            "--yes",
+            "--key",
+            cert_path,
+            "--bundle",
+            str(bundle),
+            str(root_blob),
+        ],
+        env=env,
+    )
 
 
 def sign_with_osslsigncode(
@@ -245,52 +382,47 @@ def sign_with_codesign(
     password: str,
     identity: str,
 ) -> None:
-    selected_identity = identity
-    keychain = ""
+    """Sign a Mach-O binary, bundle, DMG or PKG with rcodesign.
 
-    if not selected_identity and cert_path:
-        if sys.platform != "darwin":
-            passthrough(infile, outfile)
-            return
-        with tempfile.TemporaryDirectory() as keychain_tmp:
-            keychain, selected_identity = setup_codesign_keychain(cert_path, password, tool, keychain_tmp)
-            passthrough(infile, outfile)
-            cmd = [tool, "--force", "--sign", selected_identity]
-            if timestamp_url:
-                cmd.append("--timestamp={}".format(timestamp_url))
-            else:
-                cmd.append("--timestamp")
-            if options:
-                cmd.extend(["--options", options])
-            if entitlements:
-                cmd.extend(["--entitlements", entitlements])
-            cmd.extend(["--keychain", keychain, outfile])
-            run_cmd(cmd)
-            return
+    The codesign.bzl toolchain ships `rcodesign` (apple-codesign) rather than
+    Apple's /usr/bin/codesign, so signing works on Linux and Windows workers
+    too and needs no keychain. rcodesign takes explicit input/output paths and
+    recursively signs bundle directories itself.
+    """
+    if not tool:
+        raise ValueError(
+            "sign_tool: codesign tool path is required; register the codesign "
+            "toolchain (@codesign.bzl//toolchain:all)"
+        )
 
-    if not selected_identity:
+    if not cert_path:
+        # Matches the other signers: with no signing material available the
+        # artifact is passed through unchanged rather than ad-hoc signed.
         passthrough(infile, outfile)
         return
 
-    passthrough(infile, outfile)
-    cmd = [tool, "--force", "--sign", selected_identity]
+    ensure_parent(outfile)
+    cmd = [tool, "sign"]
+
+    cmd.extend(["--p12-file", cert_path])
+    # rcodesign requires the flag even for an empty password.
+    cmd.extend(["--p12-password", password or ""])
     if timestamp_url:
-        cmd.append("--timestamp={}".format(timestamp_url))
-    else:
-        cmd.append("--timestamp")
-    if options:
-        cmd.extend(["--options", options])
+        cmd.extend(["--timestamp-url", timestamp_url])
     if entitlements:
-        cmd.extend(["--entitlements", entitlements])
-    cmd.append(outfile)
+        cmd.extend(["--entitlements-xml-file", entitlements])
+    if identity:
+        cmd.extend(["--binary-identifier", identity])
+    for flag in [o.strip() for o in options.split(",") if o.strip()]:
+        cmd.extend(["--code-signature-flags", flag])
+
+    cmd.extend([infile, outfile])
     run_cmd(cmd)
 
 
-def sign_one(
+def sign_file(
     *,
-    sign_mode: str,
-    tool_mode: str,
-    relpath: str,
+    selected: str,
     infile: str,
     outfile: str,
     args: argparse.Namespace,
@@ -298,10 +430,6 @@ def sign_one(
     password: str,
     identity: str,
 ) -> None:
-    selected = sign_mode if sign_mode in ("osslsigncode", "codesign") else tool_mode
-    if selected == "auto":
-        selected = detect_tool(relpath)
-
     if selected == "osslsigncode":
         sign_with_osslsigncode(
             tool=args.osslsigncode_tool,
@@ -325,14 +453,123 @@ def sign_one(
             password=password,
             identity=identity,
         )
+    elif selected == "cosign":
+        sign_blob_with_cosign(
+            tool=args.cosign_tool,
+            infile=infile,
+            outfile=outfile,
+            cert_path=cert_path,
+            password=password,
+        )
     else:
         passthrough(infile, outfile)
 
+def sign_directory(
+    *,
+    tool_mode: str,
+    relpath: str,
+    selected: str,
+    indir: str,
+    outdir: str,
+    args: argparse.Namespace,
+    cert_path: Optional[str],
+    password: str,
+    identity: str,
+) -> None:
+    """Signs a directory as the signing target.
+    Calling this function implies that the directory itself can be signed using
+    some mechanism (e.g. oci layout or apple app/pkg).
+    """
+
+    if is_oci_layout(indir) and (selected == "cosign" or selected == "auto"):
+        sign_oci_layout_with_cosign(
+            tool=args.cosign_tool,
+            infile=indir,
+            outfile=outdir,
+            cert_path=cert_path,
+            password=password,
+        )
+        return
+
+    if selected == "codesign":
+        # macOS bundles (.app/.pkg) are directories, but codesign signs
+        # them as a single unit rather than file by file.
+        sign_with_codesign(
+            tool=args.codesign_tool,
+            infile=indir,
+            outfile=outdir,
+            timestamp_url=args.timestamp_url,
+            options=args.options,
+            entitlements=args.entitlements,
+            cert_path=cert_path,
+            password=password,
+            identity=identity,
+        )
+        return
+
+    passthrough(indir, outdir)
+
+    for source_file in pathlib.Path(indir).rglob("*"):
+        if not source_file.is_file() or source_file.is_symlink():
+            continue
+        relative_path = source_file.relative_to(indir).as_posix()
+        sign_one(
+            tool_mode=tool_mode,
+            relpath=relative_path,
+            infile=str(source_file),
+            outfile=str(pathlib.Path(outdir) / relative_path),
+            args=args,
+            cert_path=cert_path,
+            password=password,
+            identity=identity,
+        )
+
+def sign_one(
+    *,
+    tool_mode: str,
+    relpath: str,
+    infile: str,
+    outfile: str,
+    args: argparse.Namespace,
+    cert_path: Optional[str],
+    password: str,
+    identity: str,
+) -> None:
+    selected = tool_mode
+    if selected == "auto":
+        # Pass the real path so extensionless Mach-O/PE binaries are detected
+        # from their header rather than falling through to a detached signature.
+        selected = detect_tool(relpath, infile)
+    if not selected:
+        selected = "cosign"
+
+    if pathlib.Path(infile).is_dir():
+        sign_directory(
+            selected=selected,
+            tool_mode=tool_mode,
+            relpath=relpath,
+            args=args,
+            outdir=outfile,
+            indir=infile,
+            identity=identity,
+            cert_path=cert_path,
+            password=password,
+        )
+        return
+
+    sign_file(
+        selected=selected,
+        infile=infile,
+        outfile=outfile,
+        args=args,
+        cert_path=cert_path,
+        password=password,
+        identity=identity,
+    )
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("tree", "osslsigncode", "codesign"), default="tree")
-    parser.add_argument("--tool", choices=("auto", "osslsigncode", "codesign"), default="auto")
+    parser.add_argument("--tool", choices=("auto", "osslsigncode", "codesign", "cosign"), default="auto")
     parser.add_argument("--in", dest="infile", default="")
     parser.add_argument("--out", default="")
     parser.add_argument("--out-dir", default="")
@@ -340,6 +577,7 @@ def main() -> None:
     parser.add_argument("--src", action="append", default=[])
 
     parser.add_argument("--osslsigncode-tool", default="osslsigncode")
+    parser.add_argument("--cosign-tool", default="")
     parser.add_argument("--codesign-tool", default="codesign")
     parser.add_argument("--timestamp-url", default="")
     parser.add_argument("--name", default="")
@@ -358,7 +596,7 @@ def main() -> None:
     parser.add_argument("--version-file", default="")
     args = parser.parse_args()
 
-    if args.mode == "tree" and len(args.rel) != len(args.src):
+    if len(args.rel) != len(args.src):
         raise ValueError("sign_tool: --rel and --src counts must match")
 
     stamps = load_stamp_files([args.info_file, args.version_file])
@@ -385,39 +623,20 @@ def main() -> None:
             defaults=defaults,
         )
 
-        if args.mode == "tree":
-            pathlib.Path(args.out_dir).mkdir(parents=True, exist_ok=True)
-            for relpath, src in zip(args.rel, args.src):
-                out = str(pathlib.Path(args.out_dir) / relpath)
-                sign_one(
-                    sign_mode="tree",
-                    tool_mode=args.tool,
-                    relpath=relpath,
-                    infile=src,
-                    outfile=out,
-                    args=args,
-                    cert_path=cert_path,
-                    password=password,
-                    identity=identity,
-                )
-            return
-
-        if not args.infile or not args.out:
-            raise ValueError("sign_tool: --in and --out are required for single-file mode")
-
-        rel = pathlib.Path(args.infile).name
-        sign_one(
-            sign_mode=args.mode,
-            tool_mode=args.tool,
-            relpath=rel,
-            infile=args.infile,
-            outfile=args.out,
-            args=args,
-            cert_path=cert_path,
-            password=password,
-            identity=identity,
-        )
-
+        pathlib.Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+        for relpath, src in zip(args.rel, args.src):
+            out = str(pathlib.Path(args.out_dir) / relpath)
+            sign_one(
+                tool_mode=args.tool,
+                relpath=relpath,
+                infile=src,
+                outfile=out,
+                args=args,
+                cert_path=cert_path,
+                password=password,
+                identity=identity,
+            )
+        return
 
 if __name__ == "__main__":
     main()

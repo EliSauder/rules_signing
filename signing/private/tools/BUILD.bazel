@@ -4,6 +4,7 @@ package(default_visibility = ["//visibility:public"])
 py_library(
     name = "sign_tool_lib",
     srcs = ["sign_tool.py"],
+    deps = ["@signing_pypi//lief"],
 )
 
 py_binary(
@@ -12,13 +13,3 @@ py_binary(
     main = "sign_tool.py",
     deps = [":sign_tool_lib"],
 )
-
-exports_files([
-    "sign_codesign.sh",
-    "sign_cosign_blob.sh",
-    "sign_cosign_oci.sh",
-    "sign_osslsigncode.sh",
-    "sign_tree.sh",
-    "stamp.sh",
-    "gen_cert.sh",
-])

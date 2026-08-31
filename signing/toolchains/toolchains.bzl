@@ -41,24 +41,3 @@ osslsigncode_toolchain = rule(
     },
     provides = [platform_common.ToolchainInfo],
 )
-
-def _openssl_toolchain_impl(ctx):
-    tool = ctx.file.openssl
-    return [
-        platform_common.ToolchainInfo(
-            tool = tool,
-            data = depset([tool]),
-        ),
-        DefaultInfo(files = depset([tool])),
-    ]
-
-openssl_toolchain = rule(
-    implementation = _openssl_toolchain_impl,
-    attrs = {
-        "openssl": attr.label(
-            allow_single_file = True,
-            mandatory = True,
-        ),
-    },
-    provides = [platform_common.ToolchainInfo],
-)

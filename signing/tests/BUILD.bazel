@@ -1,4 +1,7 @@
 load("//signing:defs.bzl", "sign", "certificate")
+load("//signing/tests:tree.bzl", "make_tree")
+load("//signing/tests:cross.bzl", "platform_binary")
+load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("@rules_python//python:defs.bzl", "py_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -31,15 +34,6 @@ certificate(
     },
 )
 
-certificate(
-    name = "cert_template_base64",
-    certificate = "{CERT_B64}",
-    certificate_encoding = "base64",
-    stamp_defaults = {
-        "CERT_B64": "ZmFrZS1jZXJ0LWNvbnRlbnQ=",
-    },
-)
-
 sign(
     name = "signed_default",
     src = ":unsigned_files",
@@ -67,24 +61,76 @@ sign(
 )
 
 sign(
-    name = "signed_with_cert_template_base64",
-    src = ":unsigned_text_files",
-    certificate = ":cert_template_base64",
-    options = ["runtime", "library"],
-    entitlements = "testdata/entitlements.plist",
-)
-
-sign(
     name = "signed_with_empty_certificate",
     src = ":unsigned_text_files",
     certificate = ":cert_empty",
+)
+
+# A directory artifact holding artifacts that need different signing
+# mechanisms (PE signing for exe/dll, detached signatures for the rest).
+make_tree(
+    name = "mixed_tree",
+    files = {
+        "bin/app.exe": "fake pe payload",
+        "bin/notes.txt": "notes next to a pe file",
+        "bin/plugins/helper.dll": "fake dll payload",
+        "docs/readme.txt": "readme payload",
+        "config.yaml": "config payload",
+        "mac/installer.dmg": "fake dmg payload",
+    },
+)
+
+sign(
+    name = "signed_mixed_tree",
+    src = ":mixed_tree",
+)
+
+# Real cross-compiled executables for content-based detection tests. Both are
+# copied to extensionless names, which is what defeats filename-based detection.
+cc_binary(
+    name = "hello",
+    srcs = ["testdata_bin/hello.c"],
+)
+
+platform_binary(
+    name = "hello_macho",
+    binary = ":hello",
+    platform = "@zig_sdk//platform:darwin_arm64",
+)
+
+platform_binary(
+    name = "hello_pe",
+    binary = ":hello",
+    platform = "@zig_sdk//platform:windows_amd64",
+)
+
+# Exercises the analysis-time path for extensionless files, which must pull in
+# every native signer because the contents cannot be inspected until execution.
+sign(
+    name = "signed_extensionless_binaries",
+    src = ":extensionless_binaries",
+)
+
+filegroup(
+    name = "extensionless_binaries",
+    srcs = [
+        ":hello_macho",
+        ":hello_pe",
+    ],
 )
 
 py_test(
     name = "sign_tool_unit_test",
     srcs = ["sign_tool_unit_test.py"],
     size = "small",
-    deps = ["//signing/private/tools:sign_tool_lib"],
+    data = [
+        ":hello_macho",
+        ":hello_pe",
+    ],
+    deps = [
+        "//signing/private/tools:sign_tool_lib",
+        "@rules_python//python/runfiles",
+    ],
 )
 
 py_test(
@@ -98,15 +144,15 @@ py_test(
         ":signed_out_override",
         ":signed_force_osslsigncode",
         ":signed_with_cert_template_path",
-        ":signed_with_cert_template_base64",
         ":signed_with_empty_certificate",
+        ":signed_mixed_tree",
     ],
     args = [
         "$(rootpath :signed_default)::signing/tests/testdata_sign",
         "$(rootpath :signed_out_override)::signing/tests/testdata_sign",
         "$(rootpath :signed_force_osslsigncode)::signing/tests/testdata_sign",
         "$(rootpath :signed_with_cert_template_path)::signing/tests/testdata_sign/docs",
-        "$(rootpath :signed_with_cert_template_base64)::signing/tests/testdata_sign/docs",
         "$(rootpath :signed_with_empty_certificate)::signing/tests/testdata_sign/docs",
+        "--mixed-tree=$(rootpath :signed_mixed_tree)",
     ],
 )

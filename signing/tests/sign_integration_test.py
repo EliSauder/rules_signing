@@ -3,7 +3,10 @@ import pathlib
 import sys
 import unittest
 
-OUTPUT_CASES = sys.argv[1:]
+OUTPUT_CASES = [a for a in sys.argv[1:] if not a.startswith("--mixed-tree=")]
+MIXED_TREES = [
+    a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--mixed-tree=")
+]
 sys.argv = [sys.argv[0]]
 
 
@@ -47,6 +50,39 @@ class SignIntegrationTest(unittest.TestCase):
                 output_rel = (pathlib.Path(rel_input) / rel_file).as_posix()
                 actual_text = (tree / output_rel).read_text(encoding="utf-8")
                 self.assertEqual(actual_text, expected_text, f"content mismatch: {rel_file}")
+
+    def test_mixed_content_directory_is_flattened_and_fully_preserved(self) -> None:
+        self.assertGreater(len(MIXED_TREES), 0, "missing mixed tree runfile args")
+
+        expected = {
+            "bin/app.exe": "fake pe payload",
+            "bin/notes.txt": "notes next to a pe file",
+            "bin/plugins/helper.dll": "fake dll payload",
+            "docs/readme.txt": "readme payload",
+            "config.yaml": "config payload",
+            "mac/installer.dmg": "fake dmg payload",
+        }
+
+        for rel_tree in MIXED_TREES:
+            tree = _runfile(rel_tree)
+            self.assertTrue(tree.is_dir(), f"expected output tree directory: {tree}")
+
+            # A lone directory input is flattened, so the layout is preserved
+            # at the output root rather than nested under the input name.
+            self.assertEqual(
+                _collect_rel_files(tree),
+                set(expected),
+                f"mixed tree layout mismatch for {rel_tree}",
+            )
+
+            # Without resolvable signing material every file, regardless of the
+            # tool that would sign it, must survive the recursion untouched.
+            for rel_file, content in expected.items():
+                self.assertEqual(
+                    (tree / rel_file).read_text(encoding="utf-8"),
+                    content,
+                    f"mixed tree content mismatch: {rel_file}",
+                )
 
 
 if __name__ == "__main__":
