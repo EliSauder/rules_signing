@@ -49,3 +49,5 @@ out/
 /.ijwb/
 /.aswb/
 /.clwb/
+
+!/signing/tests/**
