@@ -78,7 +78,7 @@ def _emit_toolchain_build(name, src, host, rule_name, toolchain_type):
     """
     constraints = _exec_constraints(host)
     return "\n".join([
-        'load("{}", "{}")'.format(str(Label("//signing/toolchains:toolchains.bzl")), rule_name),
+        'load("{}", "{}")'.format(str(Label("@rules_signing//signing/toolchains:toolchains.bzl")), rule_name),
         "",
         'package(default_visibility = ["//visibility:public"])',
         "",
@@ -129,7 +129,7 @@ def _cosign_repo_impl(ctx):
         src = out,
         host = host,
         rule_name = "cosign_toolchain",
-        toolchain_type = "//signing/toolchains:cosign_toolchain_type",
+        toolchain_type = "@rules_signing//signing/toolchains:cosign_toolchain_type",
     ))
 
 cosign_repo = repository_rule(
@@ -180,7 +180,7 @@ def _osslsigncode_repo_impl(ctx):
         src = bin_name,
         host = host,
         rule_name = "osslsigncode_toolchain",
-        toolchain_type = "//signing/toolchains:osslsigncode_toolchain_type",
+        toolchain_type = "@rules_signing//signing/toolchains:osslsigncode_toolchain_type",
     ))
 
 osslsigncode_repo = repository_rule(
