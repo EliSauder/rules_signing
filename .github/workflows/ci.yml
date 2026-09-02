@@ -59,7 +59,7 @@ jobs:
       USE_BAZEL_VERSION: ${{ matrix.bazel_version }}
     defaults:
       run:
-        working-directory: tests/usagetests
+        working-directory: usagetest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
