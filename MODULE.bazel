@@ -7,14 +7,16 @@ bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "rules_python", version = "1.7.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "platforms", version = "1.1.0")
-
 bazel_dep(name = "rules_oci", version = "2.3.0")
-
 bazel_dep(name = "codesign.bzl", version = "0.0.13")
 
-# Cross-compiles the real Mach-O/PE test binaries used to verify content-based
-# tool detection. Test-only, so it never reaches consumers of this ruleset.
-bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0", dev_dependency = True)
+# Provides a hermetic `openssl` for the tests that exercise converting PKCS#12
+# signing material into the PEM form cosign requires
+bazel_dep(name = "openssl", version = "3.5.5.bcr.4")
+
+# Needed for openssl and test cross-compiles the real Mach-O/PE test binaries
+# used to verify content-based tool detection.
+bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
 
 zig_toolchains = use_extension(
     "@hermetic_cc_toolchain//toolchain:ext.bzl",
@@ -31,9 +33,11 @@ register_toolchains(
 )
 
 signing_tools = use_extension("//signing:extensions.bzl", "signing_tools", dev_dependency = True)
+signing_tools.openssl()
 use_repo(
     signing_tools,
     "signing_cosign",
+    "signing_openssl",
     "signing_osslsigncode",
 )
 
@@ -41,6 +45,7 @@ use_repo(
 # versions and register their own toolchains; nothing here leaks downstream.
 register_toolchains(
     "@signing_cosign//:cosign_toolchain",
+    "@signing_openssl//:openssl_toolchain",
     "@signing_osslsigncode//:osslsigncode_toolchain",
     dev_dependency = True,
 )
@@ -62,6 +67,24 @@ pip.parse(
 )
 use_repo(pip, "signing_pypi")
 
+# cryptography is used only by the maintainer tool that regenerates the
+# checked-in development certificates, never by the tests themselves. It gets
+# its own dev-only pip hub so it cannot leak to consumers via signing_pypi.
+pip_tests = use_extension(
+    "@rules_python//python/extensions:pip.bzl",
+    "pip",
+    dev_dependency = True,
+)
+pip_tests.parse(
+    hub_name = "signing_tests_pypi",
+    python_version = PYTHON_VERSION,
+    requirements_lock = "//signing/tests/testdata_certs:requirements.txt",
+)
+use_repo(pip_tests, "signing_tests_pypi")
+
 # The codesign toolchain type comes from codesign.bzl, but registering an
 # implementation is the consumer's choice, so this stays dev-only too.
-register_toolchains("@codesign.bzl//toolchain:all", dev_dependency = True)
+register_toolchains(
+    "@codesign.bzl//toolchain:all",
+    dev_dependency = True,
+)

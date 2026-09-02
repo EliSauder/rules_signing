@@ -8,6 +8,7 @@ load("//signing:providers.bzl", "SigningCertificateInfo")
 _OSSLSIGNCODE_TOOLCHAIN = "//signing/toolchains:osslsigncode_toolchain_type"
 _COSIGN_TOOLCHAIN = "//signing/toolchains:cosign_toolchain_type"
 _CODESIGN_TOOLCHAIN = "@codesign.bzl//toolchain:toolchain_type"
+_OPENSSL_TOOLCHAIN = "//signing/toolchains:openssl_toolchain_type"
 
 _OSSLSIGNCODE_EXT = [
     ".exe",
@@ -88,8 +89,7 @@ def _needs_toolchain(srcs, selected_tool, tool_kind):
 def _codesign_tool_file(codesign_tc):
     """Returns the codesign executable File from the codesign.bzl toolchain.
 
-    codesign.bzl exposes ToolchainInfo(codesign = <File>) directly, but other
-    toolchain implementations expose a `tool` field, so both are supported.
+    codesign.bzl exposes ToolchainInfo(codesign = <File>) directly
     """
     if codesign_tc == None:
         return None
@@ -135,9 +135,20 @@ def _sign_impl(ctx):
         fail("codesign toolchain is resolved but does not expose an executable tool")
     args.add("--codesign-tool", codesign_tool)
 
+    # openssl is optional and only consulted when PKCS#12 material has to be
+    # converted to PEM for cosign, which cannot be known until the action runs.
+    # It is therefore never required at analysis time; sign_tool raises an
+    # actionable error if the conversion turns out to be necessary.
+    openssl_tc = ctx.toolchains[_OPENSSL_TOOLCHAIN]
+    openssl_file = openssl_tc.tool if openssl_tc != None and hasattr(openssl_tc, "tool") else None
+    if openssl_file:
+        args.add("--openssl-tool", openssl_file.path)
+
     # Handle other args
     if ctx.attr.timestamp_url:
         args.add("--timestamp-url", ctx.attr.timestamp_url)
+    if ctx.attr.transparency_log:
+        args.add("--transparency-log", ctx.attr.transparency_log)
     if ctx.attr.description:
         args.add("--name", ctx.attr.description)
     if ctx.attr.url:
@@ -166,6 +177,8 @@ def _sign_impl(ctx):
         inputs.append(cosign_tc.tool)
     if codesign_file:
         inputs.append(codesign_file)
+    if openssl_file:
+        inputs.append(openssl_file)
 
     ctx.actions.run(
         executable = ctx.executable._tool,
@@ -199,7 +212,28 @@ sign = rule(
         "certificate": attr.label(
             providers = [[SigningCertificateInfo]],
         ),
-        "timestamp_url": attr.string(),
+        "timestamp_url": attr.string(
+            default = "",
+            doc = "Timestamp authority to countersign with. Empty (the " +
+                  "default) does not timestamp, so signing makes no network " +
+                  "call and no third party is told when you build. Set to " +
+                  "\"default\" for the well-known authority of the signer in " +
+                  "use (Apple's for codesign, DigiCert's for osslsigncode), " +
+                  "or to the URL of a specific server. Note that without a " +
+                  "timestamp a signature stops validating once the signing " +
+                  "certificate expires, so released artifacts usually want " +
+                  "one. Ignored by cosign.",
+        ),
+        "transparency_log": attr.string(
+            default = "",
+            doc = "Rekor transparency log to publish cosign signatures to. " +
+                  "Empty (the default) publishes nothing, so signing stays " +
+                  "offline and no hash of your build output leaves the " +
+                  "machine. Set to \"default\" to opt in to the public " +
+                  "Sigstore instance, or to the URL of a specific instance " +
+                  "(such as a private Rekor deployment). Enabling this makes " +
+                  "every signing action a network call.",
+        ),
         "description": attr.string(doc = "Signature description when supported."),
         "url": attr.string(doc = "Publisher URL when supported."),
         "options": attr.string_list(
@@ -208,7 +242,7 @@ sign = rule(
         ),
         "entitlements": attr.label(allow_single_file = True),
         "_tool": attr.label(
-            default = "//signing/private/tools:sign_tool",
+            default = "@rules_signing//signing/private/tools:sign_tool",
             executable = True,
             cfg = "exec",
         ),
@@ -217,5 +251,6 @@ sign = rule(
         config_common.toolchain_type(_OSSLSIGNCODE_TOOLCHAIN, mandatory = False),
         config_common.toolchain_type(_COSIGN_TOOLCHAIN, mandatory = False),
         config_common.toolchain_type(_CODESIGN_TOOLCHAIN, mandatory = False),
+        config_common.toolchain_type(_OPENSSL_TOOLCHAIN, mandatory = False),
     ],
 )

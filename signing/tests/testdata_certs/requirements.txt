@@ -1,0 +1,7 @@
+# Used only by //signing/tests/testdata_certs:regenerate, the maintainer tool
+# that rewrites the checked-in development certificates. Tests never depend on
+# it. Transitive dependencies are pinned explicitly because pip.parse does not
+# resolve them.
+cryptography==50.0.1
+cffi==2.1.1
+pycparser==3.0

@@ -193,3 +193,53 @@ osslsigncode_repo = repository_rule(
         "strip_prefix": attr.string_dict(default = {}),
     },
 )
+
+def _openssl_build(src, host):
+    """Emits a BUILD file exposing openssl as a registrable toolchain.
+
+    Unlike cosign and osslsigncode, openssl is not downloaded here. It is
+    either adopted from the host or taken from a target another module builds,
+    so the caller supplies the label to wrap.
+    """
+    return _emit_toolchain_build(
+        name = "openssl",
+        src = src,
+        host = host,
+        rule_name = "openssl_toolchain",
+        toolchain_type = "@rules_signing//signing/toolchains:openssl_toolchain_type",
+    )
+
+def _openssl_local_impl(ctx):
+    binpath = ctx.path(ctx.attr.path)
+    if not binpath.exists:
+        fail("openssl path '{}' does not exist".format(ctx.attr.path))
+
+    host, _ = _host_platform(ctx)
+    ctx.symlink(binpath, "openssl")
+    ctx.file("BUILD.bazel", _openssl_build("openssl", host))
+
+openssl_local_repo = repository_rule(
+    implementation = _openssl_local_impl,
+    doc = "Repository rule that adopts an openssl binary already present on the host.",
+    attrs = {
+        "path": attr.string(mandatory = True),
+    },
+)
+
+def _openssl_label_impl(ctx):
+    # No exec constraints: the referenced target is built by Bazel for
+    # whichever exec platform the action runs on, so pinning the host that
+    # happened to evaluate this repository rule would be wrong.
+    ctx.file("BUILD.bazel", _openssl_build(str(ctx.attr.label), ""))
+
+openssl_label_repo = repository_rule(
+    implementation = _openssl_label_impl,
+    doc = "Repository rule that wraps an openssl binary built by another module.",
+    attrs = {
+        "label": attr.label(
+            cfg = "exec",
+            executable = True,
+            mandatory = True,
+        ),
+    },
+)

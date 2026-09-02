@@ -31,6 +31,9 @@ def add_cert_args(ctx, args, info):
     if info.certificate != None:
         args.add("--cert-file", info.certificate)
         extra.append(info.certificate)
+    if getattr(info, "ca_file", None) != None:
+        args.add("--ca-file", info.ca_file)
+        extra.append(info.ca_file)
     if info.cert:
         args.add("--cert-template", info.cert)
     args.add("--cert-encoding", info.cert_encoding or "path")

@@ -1,7 +1,18 @@
 load("//signing:defs.bzl", "sign", "certificate")
 load("//signing/tests:tree.bzl", "make_tree")
 load("//signing/tests:cross.bzl", "platform_binary")
+load("//signing/tests:fixtures.bzl", "app_bundle", "codesign_tool")
+load("//signing/tests:manifest.bzl", "file_name_manifest")
+load(
+    "//signing/tests/testdata_certs:certs.bzl",
+    "DEV_CERT_PASSWORD",
+    "DEV_GENERIC_P12_BASE64",
+    "DEV_SHARED_P12_BASE64",
+)
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -119,6 +130,311 @@ filegroup(
     ],
 )
 
+# ---------------------------------------------------------------------------
+# Real signing fixtures
+#
+# Everything above signs with certificates that deliberately cannot be
+# resolved, which only ever exercises the passthrough path. The targets below
+# sign with the checked-in development certificates in //signing/tests/
+# testdata_certs, producing genuine signatures that sign_verify_test then
+# checks with each tool's own verifier.
+# ---------------------------------------------------------------------------
+
+# The same PE binary under a name osslsigncode is selected for by extension,
+# complementing the extensionless copy that is selected for by content.
+copy_file(
+    name = "hello_exe",
+    src = ":hello_pe",
+    out = "hello.exe",
+)
+
+app_bundle(
+    name = "hello_app",
+    binary = ":hello_macho",
+    executable_name = "hello",
+    info_plist = "testdata/app_info.plist",
+)
+
+# Directory artifacts dispatch per file at execution time. A `sign` target
+# carries a single certificate, and no one certificate works across all three
+# signers, so the trees are grouped by the signer their contents resolve to.
+make_tree(
+    name = "blob_tree",
+    files = {
+        "docs/readme.txt": "readme payload",
+        "config.yaml": "config payload",
+    },
+)
+
+oci_image(
+    name = "unsigned_oci_image",
+    architecture = "amd64",
+    os = "linux",
+)
+
+certificate(
+    name = "dev_cert_generic_pem",
+    certificate_file = "//signing/tests/testdata_certs:generic.pem",
+)
+
+certificate(
+    name = "dev_cert_generic_p12",
+    certificate_file = "//signing/tests/testdata_certs:generic.p12",
+    password = DEV_CERT_PASSWORD,
+)
+
+# The base64 encoding takes the certificate as a string rather than a file, and
+# is written as a placeholder so template interpolation is covered at the same
+# time.
+certificate(
+    name = "dev_cert_generic_base64",
+    certificate = "{DEV_CERTIFICATE}",
+    certificate_encoding = "base64",
+    password = DEV_CERT_PASSWORD,
+    stamp_defaults = {"DEV_CERTIFICATE": DEV_GENERIC_P12_BASE64},
+)
+
+certificate(
+    name = "dev_cert_apple_pem",
+    certificate_file = "//signing/tests/testdata_certs:apple.pem",
+    identity = "dev.rules-signing.hello",
+)
+
+certificate(
+    name = "dev_cert_apple_p12",
+    certificate_file = "//signing/tests/testdata_certs:apple.p12",
+    identity = "dev.rules-signing.hello",
+    password = DEV_CERT_PASSWORD,
+)
+
+certificate(
+    name = "dev_cert_cosign",
+    certificate_file = "//signing/tests/testdata_certs:cosign.key",
+    password = DEV_CERT_PASSWORD,
+)
+
+# One CA-issued certificate driving every signer. `ca_file` supplies the
+# issuing chain, which the signers that use X.509 embed in the signature.
+certificate(
+    name = "dev_cert_shared",
+    ca_file = "//signing/tests/testdata_certs:shared_ca.crt",
+    certificate_file = "//signing/tests/testdata_certs:shared.pem",
+    identity = "dev.rules-signing.hello",
+)
+
+# The same credential as PKCS#12. cosign cannot read PKCS#12, so signing a blob
+# with this exercises the openssl conversion path.
+certificate(
+    name = "dev_cert_shared_p12",
+    ca_file = "//signing/tests/testdata_certs:shared_ca.crt",
+    certificate = "{DEV_CERTIFICATE}",
+    certificate_encoding = "base64",
+    identity = "dev.rules-signing.hello",
+    password = DEV_CERT_PASSWORD,
+    stamp_defaults = {"DEV_CERTIFICATE": DEV_SHARED_P12_BASE64},
+)
+
+SIGNED_DESCRIPTION = "rules_signing development signature"
+
+SIGNED_URL = "https://example.invalid/rules_signing"
+
+sign(
+    name = "signed_real_pe_pem",
+    src = ":hello_exe",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    tool = "osslsigncode",
+    url = SIGNED_URL,
+)
+
+sign(
+    name = "signed_real_pe_p12",
+    src = ":hello_exe",
+    certificate = ":dev_cert_generic_p12",
+    description = SIGNED_DESCRIPTION,
+    tool = "osslsigncode",
+    url = SIGNED_URL,
+)
+
+sign(
+    name = "signed_real_pe_base64",
+    src = ":hello_exe",
+    certificate = ":dev_cert_generic_base64",
+    description = SIGNED_DESCRIPTION,
+    tool = "osslsigncode",
+    url = SIGNED_URL,
+)
+
+# No `tool`, so the extensionless binary has to be routed to osslsigncode by
+# sniffing its PE header.
+sign(
+    name = "signed_real_pe_detected",
+    src = ":hello_pe",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+# Timestamping is disabled throughout: rcodesign otherwise contacts
+# timestamp.apple.com, which would make every build depend on the network.
+sign(
+    name = "signed_real_macho_pem",
+    src = ":hello_macho",
+    certificate = ":dev_cert_apple_pem",
+    entitlements = "testdata/entitlements.plist",
+    options = ["runtime"],
+    tool = "codesign",
+)
+
+sign(
+    name = "signed_real_macho_p12",
+    src = ":hello_macho",
+    certificate = ":dev_cert_apple_p12",
+    entitlements = "testdata/entitlements.plist",
+    options = ["runtime"],
+    tool = "codesign",
+)
+
+# Bundles are directory artifacts signed as a single unit rather than file by
+# file, which is a different code path from the per-file tree walk.
+sign(
+    name = "signed_real_app_bundle",
+    src = ":hello_app",
+    certificate = ":dev_cert_apple_pem",
+    options = ["runtime"],
+    tool = "codesign",
+)
+
+sign(
+    name = "signed_real_blobs",
+    src = ":unsigned_text_files",
+    certificate = ":dev_cert_cosign",
+    tool = "cosign",
+)
+
+sign(
+    name = "signed_real_blob_tree",
+    src = ":blob_tree",
+    certificate = ":dev_cert_cosign",
+)
+
+sign(
+    name = "signed_real_oci_image",
+    src = ":unsigned_oci_image",
+    certificate = ":dev_cert_cosign",
+)
+
+# ---------------------------------------------------------------------------
+# One certificate, every signer. Each of these uses :dev_cert_shared.
+# ---------------------------------------------------------------------------
+
+sign(
+    name = "signed_shared_pe",
+    src = ":hello_exe",
+    certificate = ":dev_cert_shared",
+    description = SIGNED_DESCRIPTION,
+    tool = "osslsigncode",
+    url = SIGNED_URL,
+)
+
+sign(
+    name = "signed_shared_macho",
+    src = ":hello_macho",
+    certificate = ":dev_cert_shared",
+    entitlements = "testdata/entitlements.plist",
+    options = ["runtime"],
+    tool = "codesign",
+)
+
+sign(
+    name = "signed_shared_blobs",
+    src = ":unsigned_text_files",
+    certificate = ":dev_cert_shared",
+    tool = "cosign",
+)
+
+# PKCS#12 has to be converted before cosign will accept it, which needs the
+# openssl toolchain registered.
+sign(
+    name = "signed_shared_blobs_from_p12",
+    src = ":unsigned_text_files",
+    certificate = ":dev_cert_shared_p12",
+    tool = "cosign",
+)
+
+# Gives tests the rcodesign binary, which unlike cosign and osslsigncode is
+# only reachable through toolchain resolution.
+codesign_tool(name = "codesign_tool")
+
+py_test(
+    name = "sign_verify_test",
+    size = "small",
+    srcs = ["sign_verify_test.py"],
+    args = [
+        "--osslsigncode=$(rootpath @signing_osslsigncode//:osslsigncode_file)",
+        "--cosign=$(rootpath @signing_cosign//:cosign_file)",
+        "--codesign=$(rootpath :codesign_tool)",
+        "--generic-ca=$(rootpath //signing/tests/testdata_certs:generic.crt)",
+        "--cosign-public-key=$(rootpath //signing/tests/testdata_certs:cosign.pub)",
+        # Quoted because Bazel applies shell tokenization to `args`, which
+        # would otherwise split a multi-word value into separate arguments.
+        "--description='" + SIGNED_DESCRIPTION + "'",
+        "--url=" + SIGNED_URL,
+        "--identity=dev.rules-signing.hello",
+        # Paths inside a signed tree mirror the source's own layout, except
+        # when the whole tree is a single directory artifact, which is
+        # flattened to the root of the output.
+        "--pe=$(rootpath :signed_real_pe_pem)/signing/tests/hello.exe",
+        "--pe=$(rootpath :signed_real_pe_p12)/signing/tests/hello.exe",
+        "--pe=$(rootpath :signed_real_pe_base64)/signing/tests/hello.exe",
+        "--pe=$(rootpath :signed_real_pe_detected)/signing/tests/hello_pe",
+        "--macho=$(rootpath :signed_real_macho_pem)/signing/tests/hello_macho",
+        "--macho=$(rootpath :signed_real_macho_p12)/signing/tests/hello_macho",
+        "--app-bundle=$(rootpath :signed_real_app_bundle)",
+        "--signed-blob=$(rootpath :signed_real_blobs)/signing/tests/testdata_sign/docs/readme.txt",
+        "--signed-blob=$(rootpath :signed_real_blobs)/signing/tests/testdata_sign/docs/nested/guide.txt",
+        "--signed-blob=$(rootpath :signed_real_blob_tree)/docs/readme.txt",
+        "--signed-blob=$(rootpath :signed_real_blob_tree)/config.yaml",
+        "--signed-oci=$(rootpath :signed_real_oci_image)",
+        # The single certificate that drives all three signers. Verification
+        # trusts only the root, so the intermediate has to have travelled
+        # inside each signature by way of the certificate's `ca_file`.
+        "--shared-root=$(rootpath //signing/tests/testdata_certs:shared_root.crt)",
+        "--shared-public-key=$(rootpath //signing/tests/testdata_certs:shared.pub)",
+        "--shared-pe=$(rootpath :signed_shared_pe)/signing/tests/hello.exe",
+        "--shared-macho=$(rootpath :signed_shared_macho)/signing/tests/hello_macho",
+        "--shared-blob=$(rootpath :signed_shared_blobs)/signing/tests/testdata_sign/docs/readme.txt",
+        "--shared-blob=$(rootpath :signed_shared_blobs_from_p12)/signing/tests/testdata_sign/docs/readme.txt",
+    ],
+    data = [
+        ":codesign_tool",
+        ":signed_real_app_bundle",
+        ":signed_real_blob_tree",
+        ":signed_real_blobs",
+        ":signed_real_macho_p12",
+        ":signed_real_macho_pem",
+        ":signed_real_oci_image",
+        ":signed_real_pe_base64",
+        ":signed_real_pe_detected",
+        ":signed_real_pe_p12",
+        ":signed_real_pe_pem",
+        ":signed_shared_blobs",
+        ":signed_shared_blobs_from_p12",
+        ":signed_shared_macho",
+        ":signed_shared_pe",
+        "//signing/tests/testdata_certs:cosign.pub",
+        "//signing/tests/testdata_certs:generic.crt",
+        "//signing/tests/testdata_certs:shared.pub",
+        "//signing/tests/testdata_certs:shared_root.crt",
+        "@signing_cosign//:cosign_file",
+        "@signing_osslsigncode//:osslsigncode_file",
+    ],
+    deps = [
+        "//signing/private/tools:sign_tool_lib",
+        "@rules_python//python/runfiles",
+    ],
+)
+
 py_test(
     name = "sign_tool_unit_test",
     srcs = ["sign_tool_unit_test.py"],
@@ -165,4 +481,83 @@ py_test(
     deps = [
         "@rules_python//python/runfiles",
     ],
+)
+
+# A `certificate` is a file target as well as a provider, so consuming one
+# through `srcs` has to yield both halves of the credential. Before the chain
+# was added to DefaultInfo this produced only the leaf, which is exactly the
+# silent failure that would leave a consumer unable to verify anything.
+genrule(
+    name = "certificate_default_outputs",
+    srcs = [":dev_cert_shared"],
+    outs = ["certificate_default_outputs.txt"],
+    cmd = """
+set -eu
+for f in $(SRCS); do basename "$$f"; done | sort > $@
+expected="shared.pem
+shared_ca.crt"
+actual="$$(cat $@)"
+if [ "$$actual" != "$$expected" ]; then
+    echo "certificate DefaultInfo mismatch" >&2
+    echo "expected: $$expected" >&2
+    echo "actual:   $$actual" >&2
+    exit 1
+fi
+""",
+)
+
+build_test(
+    name = "certificate_provides_its_chain_test",
+    targets = [":certificate_default_outputs"],
+)
+
+# Signing must never rename what it copies: a mangled name silently breaks
+# whatever consumes the output, and the rule builds output paths by string
+# manipulation, so the risk is real. These fixtures carry names that are
+# awkward but legal on every supported platform, deliberately avoiding the
+# characters Windows forbids (< > : " / \ | ? *) so the same test runs in CI
+# there.
+filegroup(
+    name = "awkward_named_files",
+    srcs = glob(["testdata_names/**"]),
+)
+
+file_name_manifest(
+    name = "awkward_names_manifest",
+    srcs = [":awkward_named_files"],
+)
+
+# Without a certificate every file takes the passthrough copy, which isolates
+# the rule's path handling from any signer's behaviour.
+sign(
+    name = "signed_awkward_names_passthrough",
+    src = ":awkward_named_files",
+    certificate = ":cert_empty",
+)
+
+# The same names, but actually signed, so a signer that rewrites or normalizes
+# the path it is handed is caught too.
+sign(
+    name = "signed_awkward_names_cosign",
+    src = ":awkward_named_files",
+    certificate = ":dev_cert_shared",
+    tool = "cosign",
+)
+
+py_test(
+    name = "sign_name_preservation_test",
+    size = "small",
+    srcs = ["sign_name_preservation_test.py"],
+    args = [
+        "--names-manifest=$(rootpath :awkward_names_manifest)",
+        "--passthrough-tree=$(rootpath :signed_awkward_names_passthrough)",
+        "--signed-tree=$(rootpath :signed_awkward_names_cosign)",
+    ],
+    data = [
+        ":awkward_named_files",
+        ":awkward_names_manifest",
+        ":signed_awkward_names_cosign",
+        ":signed_awkward_names_passthrough",
+    ],
+    deps = ["@rules_python//python/runfiles"],
 )

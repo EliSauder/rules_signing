@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import pathlib
@@ -13,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import urllib.parse
 import lief
 
 from typing import Dict, Iterable, Optional, Sequence, Tuple
@@ -51,7 +53,7 @@ def sniff_binary_format(path: str) -> str:
     Java class files sharing 0xCAFEBABE with universal Mach-O binaries.
     """
 
-    if not os.path.exists(path):
+    if not os.path.exists(path) or os.path.isdir(path):
         return ""
 
     # no try except since it is better to fail than to mistakenly sign
@@ -144,6 +146,132 @@ def ensure_parent(path: str) -> None:
     pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
 
 
+def is_pem_certificate(path: str) -> bool:
+    """Reports whether a certificate file holds PEM rather than PKCS#12 data.
+
+    Signing material reaches this tool from several places (a checked-in file,
+    a `{KEY}`-stamped path, or a base64 blob decoded into a scratch file), and
+    only some of them carry a meaningful extension. Sniffing the PEM armour
+    keeps the format decision correct for all of them, which matters because
+    PEM and PKCS#12 need entirely different flags from the underlying signers.
+    """
+
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return False
+    return b"-----BEGIN" in head
+
+
+def is_cosign_private_key(path: str) -> bool:
+    """Reports whether a file is already a cosign-format signing key.
+
+    cosign wraps keys in its own encrypted envelope rather than reading a
+    standard PEM key, so a key it produced has to be told apart from the
+    ordinary certificate material every other signer consumes.
+    """
+
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(128)
+    except OSError:
+        return False
+    return b"SIGSTORE PRIVATE KEY" in head
+
+
+def pkcs12_to_pem(cert_path: str, password: str, tmpdir: str, openssl: str = "") -> str:
+    """Converts PKCS#12 signing material to the unified PEM cosign requires.
+
+    cosign only reads PEM, so a PKCS#12 certificate that works with the other
+    two signers would otherwise be unusable here. openssl is an optional
+    toolchain rather than a hard dependency, because most builds never need
+    this conversion; when it is absent the caller is told exactly how to
+    proceed instead of failing with a cryptic error from cosign.
+    """
+
+    if not openssl:
+        raise ValueError(
+            "sign_tool: cosign requires PEM signing material but the "
+            "certificate is PKCS#12 ({}). Either supply a PEM certificate "
+            "(private key and certificate in one file) via certificate_file, "
+            "or register the optional openssl toolchain so it can be "
+            "converted during the build. See the 'Signing with a single "
+            "certificate' section of the rules_signing README."
+            .format(cert_path)
+        )
+
+    out = pathlib.Path(tmpdir) / "cert-from-p12.pem"
+    cmd = [
+        openssl,
+        "pkcs12",
+        "-in",
+        cert_path,
+        "-nodes",
+        # Only the private key is extracted. cosign's trust model is a bare
+        # public key rather than an X.509 chain, so it ignores certificates --
+        # and it reads the first PEM block in the file, which would be a
+        # certificate rather than the key if they were included.
+        "-nocerts",
+        "-passin",
+        "pass:{}".format(password),
+        "-out",
+        str(out),
+    ]
+    try:
+        run_cmd(cmd)
+    except subprocess.CalledProcessError:
+        # Certificates written by older tools use ciphers that OpenSSL 3 only
+        # exposes through its legacy provider.
+        run_cmd(cmd + ["-legacy"])
+    return str(out)
+
+
+def resolve_cosign_key(
+    *, tool: str, cert_path: str, password: str, tmpdir: str, openssl: str = ""
+) -> str:
+    """Returns a cosign-usable signing key for arbitrary certificate material.
+
+    cosign is the odd one out: osslsigncode and rcodesign both consume ordinary
+    certificate/key files, while cosign insists on its own key envelope. Left
+    alone that would force a separate credential just for cosign, so any
+    ordinary key is imported into cosign's format here. `import-key-pair` only
+    rewraps the key it is given, so the imported key is the same key, which is
+    what lets one certificate back all three signers.
+    """
+
+    if is_cosign_private_key(cert_path):
+        return cert_path
+
+    if not is_pem_certificate(cert_path):
+        cert_path = pkcs12_to_pem(cert_path, password, tmpdir, openssl)
+
+    prefix = pathlib.Path(tmpdir) / "cosign-imported"
+    imported = prefix.with_suffix(".key")
+    if not imported.is_file():
+        run_cmd(
+            [
+                tool,
+                "import-key-pair",
+                "--key",
+                cert_path,
+                "--output-key-prefix",
+                str(prefix),
+                "--yes",
+            ],
+            env=cosign_env(password),
+        )
+    return str(imported)
+
+
+def cosign_env(password: str) -> Dict[str, str]:
+    """Builds the environment cosign uses to unlock (or protect) a key."""
+
+    env = dict(os.environ)
+    env["COSIGN_PASSWORD"] = password
+    return env
+
+
 def passthrough(src: str, out: str) -> None:
     """Copies contents of source to out with no modifications"""
     if pathlib.Path(src).is_dir():
@@ -151,7 +279,12 @@ def passthrough(src: str, out: str) -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if out_path.exists():
             shutil.rmtree(out_path)
-        shutil.copytree(src, out, symlinks=True)
+
+        # Symlinks are resolved rather than recreated. Bazel stages the
+        # contents of a directory input as symlinks into the execroot, so
+        # preserving them would leave the output tree pointing at paths that do
+        # not outlive the action.
+        shutil.copytree(src, out, symlinks=False)
         for root, dirs, files in os.walk(out):
             for dname in dirs:
                 dpath = pathlib.Path(root) / dname
@@ -230,6 +363,126 @@ def run_cmd_capture(cmd: Sequence[str], *, env: Optional[Dict[str, str]] = None)
     result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
     return result.stdout
 
+_PUBLIC_REKOR_URL = "https://rekor.sigstore.dev"
+
+# What `timestamp_url = "default"` resolves to. rcodesign documents Apple's
+# server as its own default; osslsigncode has no built-in default, so the
+# most widely used public Authenticode timestamp authority stands in for one.
+_DEFAULT_TIMESTAMP_URLS = {
+    "codesign": "http://timestamp.apple.com/ts01",
+    "osslsigncode": "http://timestamp.digicert.com",
+}
+
+
+def resolve_timestamp_url(timestamp_url: str, signer: str) -> str:
+    """Maps the `timestamp_url` setting onto a timestamp authority URL.
+
+    Empty means no timestamping, which is the default: countersigning contacts
+    a third party and tells it when you build, so it is opt-in like any other
+    network access. `default` selects the well-known authority for the signer
+    in use, and any other value is a specific server's URL.
+
+    Returning empty is not the same as leaving the tool to its own devices:
+    rcodesign timestamps against Apple's server unless actively told not to,
+    so callers must translate this into whatever disables that.
+    """
+
+    if not timestamp_url:
+        return ""
+    if timestamp_url == "default":
+        return _DEFAULT_TIMESTAMP_URLS[signer]
+    if not timestamp_url.startswith(("https://", "http://")):
+        raise ValueError(
+            "sign_tool: timestamp_url must be empty (do not timestamp), "
+            "'default' (the well-known authority for the signer in use), or "
+            "the URL of a timestamp server; got '{}'".format(timestamp_url)
+        )
+    return timestamp_url
+
+
+def resolve_rekor_url(transparency_log: str) -> str:
+    """Maps the `transparency_log` setting onto a Rekor instance URL.
+
+    Empty means no transparency log, which is the default: publishing a hash of
+    the build output to a public ledger, and making every signing action a
+    network call to do it, is not something a build rule should do unasked.
+    `default` opts in to the public Sigstore instance, and any other value is
+    the URL of a specific instance, which is how a private Rekor deployment is
+    selected.
+    """
+
+    if not transparency_log:
+        return ""
+    if transparency_log == "default":
+        return _PUBLIC_REKOR_URL
+    if not transparency_log.startswith(("https://", "http://")):
+        raise ValueError(
+            "sign_tool: transparency_log must be empty (do not publish), "
+            "'default' (the public Sigstore instance at {}), or the URL of a "
+            "Rekor instance; got '{}'".format(_PUBLIC_REKOR_URL, transparency_log)
+        )
+    return transparency_log
+
+
+def cosign_signing_config(tool: str, tmpdir: str, transparency_log: str = "") -> str:
+    """Builds the Sigstore signing config that decides where signatures go.
+
+    cosign contacts the public Rekor log unless it is handed a signing config
+    saying otherwise, so one is always supplied. With no transparency log the
+    config declares no online services at all, keeping signing local; otherwise
+    it names the one Rekor instance to publish to. Either way the config is
+    produced by cosign itself, so its schema always matches the version of the
+    tool in use.
+    """
+
+    url = resolve_rekor_url(transparency_log)
+
+    # Distinct settings must not share a cached config, and the URL is not
+    # safe to put in a filename.
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12] if url else "offline"
+    config_path = pathlib.Path(tmpdir) / "cosign-signing-config-{}.json".format(key)
+    if config_path.is_file():
+        return str(config_path)
+
+    cmd = [tool, "signing-config", "create", "--out", str(config_path)]
+    if url:
+        # start-time is the epoch because these services are not being rotated
+        # on a schedule; the entry simply has to be valid whenever we sign.
+        cmd.extend([
+            "--rekor",
+            "url={},api-version=1,start-time=1970-01-01T00:00:00Z,operator={}".format(
+                url, urllib.parse.urlparse(url).hostname or url
+            ),
+            "--rekor-config",
+            "ANY",
+        ])
+    run_cmd(cmd)
+    return str(config_path)
+
+
+def cosign_sign_blob_cmd(
+    *,
+    tool: str,
+    cert_path: str,
+    bundle_path: str,
+    infile: str,
+    tmpdir: str,
+    transparency_log: str = "",
+) -> list:
+    return [
+        tool,
+        "sign-blob",
+        "--yes",
+        "--key",
+        cert_path,
+        "--bundle",
+        bundle_path,
+        "--signing-config",
+        cosign_signing_config(tool, tmpdir, transparency_log),
+        infile,
+    ]
+
+
 def sign_blob_with_cosign(
     *,
     tool: str,
@@ -237,6 +490,9 @@ def sign_blob_with_cosign(
     outfile: str,
     cert_path: Optional[str],
     password: str,
+    tmpdir: str = "",
+    openssl: str = "",
+    transparency_log: str = "",
 ) -> None:
     passthrough(infile, outfile)
     if not cert_path:
@@ -247,9 +503,23 @@ def sign_blob_with_cosign(
     env = os.environ.copy()
     if password:
         env["COSIGN_PASSWORD"] = password
+    cert_path = resolve_cosign_key(
+        tool=tool,
+        cert_path=cert_path,
+        password=password,
+        tmpdir=tmpdir,
+        openssl=openssl,
+    )
     bundle_path = outfile + ".bundle.json"
     signature = run_cmd_capture(
-        [tool, "sign-blob", "--yes", "--key", cert_path, "--bundle", bundle_path, infile],
+        cosign_sign_blob_cmd(
+            tool=tool,
+            cert_path=cert_path,
+            bundle_path=bundle_path,
+            infile=infile,
+            tmpdir=tmpdir,
+            transparency_log=transparency_log,
+        ),
         env=env,
     ).strip()
     if not signature:
@@ -264,9 +534,9 @@ def sign_blob_with_cosign(
 
 
 def read_signature_from_bundle(bundle_path: str) -> str:
-    """For oci layout images
+    """For OCI layout images
     cosign v3 writes the signature only into the Sigstore bundle and
-    emits nothing on stdout, get so it from the bundle instead.
+    emits nothing on stdout, so get it from the bundle instead.
     """
 
     path = pathlib.Path(bundle_path)
@@ -312,6 +582,9 @@ def sign_oci_layout_with_cosign(
     outfile: str,
     cert_path: Optional[str],
     password: str,
+    tmpdir: str = "",
+    openssl: str = "",
+    transparency_log: str = "",
 ) -> None:
     passthrough(infile, outfile)
 
@@ -328,18 +601,23 @@ def sign_oci_layout_with_cosign(
     env = os.environ.copy()
     if password:
         env["COSIGN_PASSWORD"] = password
+    cert_path = resolve_cosign_key(
+        tool=tool,
+        cert_path=cert_path,
+        password=password,
+        tmpdir=tmpdir,
+        openssl=openssl,
+    )
 
     run_cmd(
-        [
-            tool,
-            "sign-blob",
-            "--yes",
-            "--key",
-            cert_path,
-            "--bundle",
-            str(bundle),
-            str(root_blob),
-        ],
+        cosign_sign_blob_cmd(
+            tool=tool,
+            cert_path=cert_path,
+            bundle_path=str(bundle),
+            infile=str(root_blob),
+            tmpdir=tmpdir,
+            transparency_log=transparency_log,
+        ),
         env=env,
     )
 
@@ -354,19 +632,30 @@ def sign_with_osslsigncode(
     url: str,
     cert_path: Optional[str],
     password: str,
+    ca_path: str = "",
 ) -> None:
     if not cert_path:
         passthrough(infile, outfile)
         return
 
     ensure_parent(outfile)
-    cmd = [tool, "sign", "-pkcs12", cert_path, "-h", "sha256"]
-    if password:
-        cmd.extend(["-pass", password])
+    if is_pem_certificate(cert_path):
+        # A unified PEM (certificate plus unencrypted private key in one file)
+        # is handed to osslsigncode directly; it has no PKCS#12 container to
+        # unwrap and therefore takes no password.
+        cmd = [tool, "sign", "-certs", cert_path, "-key", cert_path, "-h", "sha256"]
+    else:
+        cmd = [tool, "sign", "-pkcs12", cert_path, "-h", "sha256"]
+        if password:
+            cmd.extend(["-pass", password])
+    if ca_path:
+        # Embeds the issuing chain in the signature so a verifier can build a
+        # path to the root without having to source the intermediates itself.
+        cmd.extend(["-ac", ca_path])
+    timestamp_url = resolve_timestamp_url(timestamp_url, "osslsigncode")
     if timestamp_url:
         cmd.extend(["-t", timestamp_url])
-    if name:
-        cmd.extend(["-n", name])
+    if name:        cmd.extend(["-n", name])
     if url:
         cmd.extend(["-i", url])
     cmd.extend(["-in", infile, "-out", outfile])
@@ -384,6 +673,7 @@ def sign_with_codesign(
     cert_path: Optional[str],
     password: str,
     identity: str,
+    ca_path: str = "",
 ) -> None:
     """Sign a Mach-O binary, bundle, DMG or PKG with rcodesign.
 
@@ -407,11 +697,26 @@ def sign_with_codesign(
     ensure_parent(outfile)
     cmd = [tool, "sign"]
 
-    cmd.extend(["--p12-file", cert_path])
-    # rcodesign requires the flag even for an empty password.
-    cmd.extend(["--p12-password", password or ""])
-    if timestamp_url:
-        cmd.extend(["--timestamp-url", timestamp_url])
+    if is_pem_certificate(cert_path):
+        # A unified PEM (certificate plus unencrypted private key in one file)
+        # is read directly and, having no PKCS#12 container, takes no password.
+        cmd.extend(["--pem-file", cert_path])
+    else:
+        cmd.extend(["--p12-file", cert_path])
+        # rcodesign requires the flag even for an empty password.
+        cmd.extend(["--p12-password", password or ""])
+    if ca_path:
+        # rcodesign pairs the signing key with the first certificate it sees
+        # and treats every later one as part of the issuing chain, so the CA
+        # file is supplied as an additional PEM source.
+        cmd.extend(["--pem-file", ca_path])
+    # Unlike every other setting here, omitting this one is not neutral:
+    # rcodesign countersigns against Apple's timestamp server by default, so
+    # the flag is always passed and `none` is what turns that default off.
+    cmd.extend([
+        "--timestamp-url",
+        resolve_timestamp_url(timestamp_url, "codesign") or "none",
+    ])
     if entitlements:
         cmd.extend(["--entitlements-xml-file", entitlements])
     if identity:
@@ -432,6 +737,7 @@ def sign_file(
     cert_path: Optional[str],
     password: str,
     identity: str,
+    tmpdir: str = "",
 ) -> None:
     if selected == "osslsigncode":
         sign_with_osslsigncode(
@@ -441,6 +747,7 @@ def sign_file(
             timestamp_url=args.timestamp_url,
             name=args.name,
             url=args.url,
+            ca_path=args.ca_file,
             cert_path=cert_path,
             password=password,
         )
@@ -452,6 +759,7 @@ def sign_file(
             timestamp_url=args.timestamp_url,
             options=args.options,
             entitlements=args.entitlements,
+            ca_path=args.ca_file,
             cert_path=cert_path,
             password=password,
             identity=identity,
@@ -461,6 +769,9 @@ def sign_file(
             tool=args.cosign_tool,
             infile=infile,
             outfile=outfile,
+            tmpdir=tmpdir,
+            openssl=args.openssl_tool,
+            transparency_log=args.transparency_log,
             cert_path=cert_path,
             password=password,
         )
@@ -478,6 +789,7 @@ def sign_directory(
     cert_path: Optional[str],
     password: str,
     identity: str,
+    tmpdir: str = "",
 ) -> None:
     """Signs a directory as the signing target.
     Calling this function implies that the directory itself can be signed using
@@ -489,6 +801,9 @@ def sign_directory(
             tool=args.cosign_tool,
             infile=indir,
             outfile=outdir,
+            tmpdir=tmpdir,
+            openssl=args.openssl_tool,
+            transparency_log=args.transparency_log,
             cert_path=cert_path,
             password=password,
         )
@@ -504,6 +819,7 @@ def sign_directory(
             timestamp_url=args.timestamp_url,
             options=args.options,
             entitlements=args.entitlements,
+            ca_path=args.ca_file,
             cert_path=cert_path,
             password=password,
             identity=identity,
@@ -513,7 +829,10 @@ def sign_directory(
     passthrough(indir, outdir)
 
     for source_file in pathlib.Path(indir).rglob("*"):
-        if not source_file.is_file() or source_file.is_symlink():
+        # is_file() follows symlinks on purpose. Bazel stages the contents of a
+        # directory input as symlinks into the execroot, so skipping symlinks
+        # here would silently leave every file in the directory unsigned.
+        if not source_file.is_file():
             continue
         relative_path = source_file.relative_to(indir).as_posix()
         sign_one(
@@ -522,6 +841,7 @@ def sign_directory(
             infile=str(source_file),
             outfile=str(pathlib.Path(outdir) / relative_path),
             args=args,
+            tmpdir=tmpdir,
             cert_path=cert_path,
             password=password,
             identity=identity,
@@ -537,6 +857,7 @@ def sign_one(
     cert_path: Optional[str],
     password: str,
     identity: str,
+    tmpdir: str = "",
 ) -> None:
     selected = tool_mode
     if selected == "auto":
@@ -555,6 +876,7 @@ def sign_one(
             outdir=outfile,
             indir=infile,
             identity=identity,
+            tmpdir=tmpdir,
             cert_path=cert_path,
             password=password,
         )
@@ -565,6 +887,7 @@ def sign_one(
         infile=infile,
         outfile=outfile,
         args=args,
+        tmpdir=tmpdir,
         cert_path=cert_path,
         password=password,
         identity=identity,
@@ -581,14 +904,34 @@ def main() -> None:
 
     parser.add_argument("--osslsigncode-tool", default="osslsigncode")
     parser.add_argument("--cosign-tool", default="")
+    parser.add_argument("--openssl-tool", default="")
     parser.add_argument("--codesign-tool", default="codesign")
-    parser.add_argument("--timestamp-url", default="")
+    parser.add_argument(
+        "--timestamp-url",
+        default="",
+        help=(
+            "Timestamp authority to countersign with. Empty (the default) "
+            "does not timestamp; 'default' selects the well-known authority "
+            "for the signer in use; any other value is a server URL."
+        ),
+    )
     parser.add_argument("--name", default="")
     parser.add_argument("--url", default="")
     parser.add_argument("--options", default="")
     parser.add_argument("--entitlements", default="")
+    parser.add_argument(
+        "--transparency-log",
+        default="",
+        help=(
+            "Rekor instance to publish signatures to. Empty (the default) "
+            "publishes nothing and keeps signing offline; 'default' selects "
+            "the public Sigstore instance; any other value is the URL of a "
+            "specific instance."
+        ),
+    )
 
     parser.add_argument("--cert-file", default="")
+    parser.add_argument("--ca-file", default="")
     parser.add_argument("--cert-template", default="")
     parser.add_argument("--cert-encoding", choices=("path", "base64"), default="path")
     parser.add_argument("--password-template", default="")
@@ -635,6 +978,7 @@ def main() -> None:
                 infile=src,
                 outfile=out,
                 args=args,
+                tmpdir=tmpdir,
                 cert_path=cert_path,
                 password=password,
                 identity=identity,
