@@ -51,6 +51,9 @@ def sniff_binary_format(path: str) -> str:
     Java class files sharing 0xCAFEBABE with universal Mach-O binaries.
     """
 
+    if not os.path.exists(path):
+        return ""
+
     # no try except since it is better to fail than to mistakenly sign
     # something incorrectly.
     if lief.is_macho(path):
