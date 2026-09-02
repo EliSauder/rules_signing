@@ -148,11 +148,21 @@ py_test(
         ":signed_mixed_tree",
     ],
     args = [
-        "$(rootpath :signed_default)::signing/tests/testdata_sign",
-        "$(rootpath :signed_out_override)::signing/tests/testdata_sign",
-        "$(rootpath :signed_force_osslsigncode)::signing/tests/testdata_sign",
-        "$(rootpath :signed_with_cert_template_path)::signing/tests/testdata_sign/docs",
-        "$(rootpath :signed_with_empty_certificate)::signing/tests/testdata_sign/docs",
+        # "--tree=<tree rootpath>::<source root rootpath>" pairs each signed
+        # output with the source directory it was built from. The actual
+        # source file list is derived at runtime from the plain rootpath
+        # arguments below (grouped by shared source-root prefix), rather than
+        # being duplicated by hand in the test.
+        "--tree=$(rootpath :signed_default)::signing/tests/testdata_sign",
+        "--tree=$(rootpath :signed_out_override)::signing/tests/testdata_sign",
+        "--tree=$(rootpath :signed_force_osslsigncode)::signing/tests/testdata_sign",
+        "--tree=$(rootpath :signed_with_cert_template_path)::signing/tests/testdata_sign/docs",
+        "--tree=$(rootpath :signed_with_empty_certificate)::signing/tests/testdata_sign/docs",
         "--mixed-tree=$(rootpath :signed_mixed_tree)",
+        "$(rootpaths :unsigned_files)",
+        "$(rootpaths :unsigned_text_files)",
+    ],
+    deps = [
+        "@rules_python//python/runfiles",
     ],
 )
