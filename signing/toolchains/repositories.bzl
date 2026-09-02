@@ -13,8 +13,8 @@ _COSIGN_BASE_URL = "https://github.com/sigstore/cosign/releases/download/v{v}/{a
 _OSSLSIGNCODE_ASSET = {
     "linux_amd64": "osslsigncode-{v}-linux-amd64.tar.gz",
     "linux_arm64": "osslsigncode-{v}-linux-arm64.tar.gz",
-    "darwin_amd64": "osslsigncode-{v}-darwin-amd64.zip",
-    "darwin_arm64": "osslsigncode-{v}-darwin-arm64.zip",
+    "darwin_amd64": "osslsigncode-{v}-macos-amd64.zip",
+    "darwin_arm64": "osslsigncode-{v}-macos-arm64.zip",
     "windows_amd64": "osslsigncode-{v}-windows-amd64.zip",
     "windows_arm64": "osslsigncode-{v}-windows-arm64.zip",
 }
