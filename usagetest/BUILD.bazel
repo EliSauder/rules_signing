@@ -25,6 +25,10 @@ oci_image(
     name = "unsigned_oci_image",
     os = "linux",
     architecture = "amd64",
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
 )
 
 sign(
