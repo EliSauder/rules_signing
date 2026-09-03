@@ -31,3 +31,4 @@ OSSLSIGNCODE_HASHES={
     "2.10/osslsigncode-2.10-windows-amd64.zip":"sha256:cac1372c20646aa1d067584e16ef8ef8e8c0704acde94af3e721c5de7653430b",
     "2.10/osslsigncode-2.10-windows-arm64.zip":"sha256:7df30d1a31a7554f145a575dba0879f91a4de00ef05b083f9dd34c2c909bda09",
 }
+
