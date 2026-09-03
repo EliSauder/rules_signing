@@ -234,7 +234,7 @@
   "moduleExtensions": {
     "//signing:extensions.bzl%signing_tools": {
       "general": {
-        "bzlTransitiveDigest": "4bUJRkE8l38lu+wBJxafjHLPpvj2SEHfccaWottzdOs=",
+        "bzlTransitiveDigest": "VM3bR139Qa2YUluZyWtvQYBfkbwL118P36rzTIGq6BA=",
         "usagesDigest": "66QEiw5KidOAN4bfpj1HJ9jGX1UK5JtdJoMySaXWpS0=",
         "recordedInputs": [],
         "generatedRepoSpecs": {

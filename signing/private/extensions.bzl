@@ -41,10 +41,15 @@ def _signing_tools_impl(ctx):
     root_cosign = False
     root_osslsigncode = False
 
+    foundnms = {}
+
     for mod in ctx.modules:
         for i, t in enumerate(mod.tags.cosign):
             root_cosign = root_cosign or mod.is_root
             name = _repo_name(mod, "cosign")
+            if name in foundnms:
+                fail("repo {} already defined".format(name))
+            foundnms[name] = ""
             cosign_repo(
                 name = name,
                 version = t.version if t.version else "3.1.3",
@@ -55,7 +60,10 @@ def _signing_tools_impl(ctx):
 
         for i, t in enumerate(mod.tags.osslsigncode):
             root_osslsigncode = root_osslsigncode or mod.is_root
-            name = _repo_name(mod, "osslsigncode") if i == 0 else "{}_osslsigncode_{}".format(mod.name, i)
+            name = _repo_name(mod, "osslsigncode")
+            if name in foundnms:
+                fail("repo {} already defined".format(name))
+            foundnms[name] = ""
             osslsigncode_repo(
                 name = name,
                 version = t.version if t.version else "2.14",
@@ -66,7 +74,10 @@ def _signing_tools_impl(ctx):
             _add_dep(ctx, t, name, deps, dev_deps)
 
         for i, t in enumerate(mod.tags.openssl):
-            name = _repo_name(mod, "openssl") if i == 0 else "{}_openssl_{}".format(mod.name, i)
+            name = _repo_name(mod, "openssl")
+            if name in foundnms:
+                fail("repo {} already defined".format(name))
+            foundnms[name] = ""
             if t.path:
                 openssl_local_repo(
                     name = name,
