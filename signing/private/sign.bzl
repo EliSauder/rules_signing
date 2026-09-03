@@ -178,7 +178,14 @@ def _sign_impl(ctx):
     if codesign_file:
         inputs.append(codesign_file)
     if openssl_file:
-        inputs.append(openssl_file)
+        # `data` includes the tool itself plus any files it needs alongside
+        # it at runtime (e.g. Windows' libcrypto/libssl DLLs); adding them
+        # all as plain action inputs stages them in the sandbox next to
+        # openssl.exe, which is what its same-directory DLL search needs.
+        if openssl_tc != None and hasattr(openssl_tc, "data"):
+            inputs.extend(openssl_tc.data.to_list())
+        else:
+            inputs.append(openssl_file)
 
     ctx.actions.run(
         executable = ctx.executable._tool,

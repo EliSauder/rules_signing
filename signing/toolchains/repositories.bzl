@@ -68,15 +68,25 @@ def _exec_constraints(host):
         constraints.append(_CPU_CONSTRAINT[arch_key])
     return constraints
 
-def _emit_toolchain_build(name, src, host, rule_name, toolchain_type):
+def _emit_toolchain_build(name, src, host, rule_name, toolchain_type, data = []):
     """Emits a BUILD file exposing the tool plus a registrable toolchain.
 
     The toolchain lives in the generated repository rather than in
     //signing/toolchains so that this module never has to reference these
     repositories itself. That keeps the tool repositories opt-in: downstream
     consumers declare and register their own, and nothing is forced on them.
+
+    `data` is only relevant to rules whose implementation accepts a `data`
+    attribute (currently just openssl_toolchain, for Windows' sibling DLLs);
+    it's omitted from the generated target entirely when empty so it never
+    trips over rules that don't define that attribute.
     """
     constraints = _exec_constraints(host)
+    data_attr = ""
+    if data:
+        data_attr = "    data = [{}],\n".format(
+            ", ".join(['"{}"'.format(d) for d in data]),
+        )
     return "\n".join([
         'load("{}", "{}")'.format(str(Label("@rules_signing//signing/toolchains:toolchains.bzl")), rule_name),
         "",
@@ -87,6 +97,7 @@ def _emit_toolchain_build(name, src, host, rule_name, toolchain_type):
         "{r}(".format(r = rule_name),
         '    name = "{n}_toolchain_impl",'.format(n = name),
         '    {n} = ":{n}_file",'.format(n = name),
+        data_attr +
         ")",
         "",
         "toolchain(",
@@ -194,7 +205,7 @@ osslsigncode_repo = repository_rule(
     },
 )
 
-def _openssl_build(src, host):
+def _openssl_build(src, host, data = []):
     """Emits a BUILD file exposing openssl as a registrable toolchain.
 
     Unlike cosign and osslsigncode, openssl is not downloaded here. It is
@@ -207,6 +218,7 @@ def _openssl_build(src, host):
         host = host,
         rule_name = "openssl_toolchain",
         toolchain_type = "@rules_signing//signing/toolchains:openssl_toolchain_type",
+        data = data,
     )
 
 def _openssl_local_impl(ctx):
@@ -219,6 +231,7 @@ def _openssl_local_impl(ctx):
         binpath = ctx.which(ctx.attr.path)
     if not binpath:
         fail("openssl '{}' not found as a path or on PATH".format(ctx.attr.path))
+    binpath = binpath.realpath
 
     host, windows = _host_platform(ctx)
 
@@ -230,7 +243,25 @@ def _openssl_local_impl(ctx):
     # `FileNotFoundError: [WinError 2]` at signing time.
     out = "openssl.exe" if windows else "openssl"
     ctx.symlink(binpath, out)
-    ctx.file("BUILD.bazel", _openssl_build(out, host))
+    dlls = []
+
+    if windows:
+        # Unlike the Linux/macOS build (statically linked, or resolved via
+        # rpath/@loader_path), Windows' openssl.exe is a thin stub that
+        # dynamically loads libcrypto/libssl DLLs from its own directory.
+        # Symlinking only the exe leaves those DLLs unresolved, which fails
+        # at signing time with STATUS_DLL_NOT_FOUND (exit code 3221225781)
+        # rather than anything mentioning a missing DLL by name. Symlink
+        # every DLL next to it so the loader finds them the same way it
+        # would beside the original binary.
+        bindir = binpath.dirname
+        if bindir:
+            for entry in bindir.readdir():
+                if entry.basename.lower().endswith(".dll"):
+                    ctx.symlink(entry, entry.basename)
+                    dlls.append(entry.basename)
+
+    ctx.file("BUILD.bazel", _openssl_build(out, host, data = dlls))
 
 openssl_local_repo = repository_rule(
     implementation = _openssl_local_impl,

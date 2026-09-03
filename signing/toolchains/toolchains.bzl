@@ -47,9 +47,13 @@ def _openssl_toolchain_impl(ctx):
     return [
         platform_common.ToolchainInfo(
             tool = tool,
-            data = depset([tool]),
+            # Windows' openssl.exe dynamically loads libcrypto/libssl DLLs
+            # from its own directory; `data` carries those alongside `tool`
+            # so callers can add them as action inputs without needing to
+            # know that Windows needs anything beyond the executable itself.
+            data = depset([tool] + ctx.files.data),
         ),
-        DefaultInfo(files = depset([tool])),
+        DefaultInfo(files = depset([tool] + ctx.files.data)),
     ]
 
 openssl_toolchain = rule(
@@ -59,6 +63,11 @@ openssl_toolchain = rule(
         "openssl": attr.label(
             allow_single_file = True,
             mandatory = True,
+        ),
+        "data": attr.label_list(
+            allow_files = True,
+            doc = "Extra files openssl needs alongside it at runtime " +
+                  "(e.g. Windows' libcrypto/libssl DLLs).",
         ),
     },
     provides = [platform_common.ToolchainInfo],
