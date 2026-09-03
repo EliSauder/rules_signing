@@ -1,7 +1,9 @@
 import base64
 import json
+import os
 import pathlib
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -600,7 +602,9 @@ class SignToolUnitTest(unittest.TestCase):
             root = pathlib.Path(tmp)
             source = root / "hello.app"
             (source / "Contents").mkdir(parents=True)
-            (source / "Contents" / "Info.plist").write_text("plist", encoding="utf-8")
+            info_plist = source / "Contents" / "Info.plist"
+            info_plist.write_text("plist", encoding="utf-8")
+            info_plist.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
             cert = root / "cert.pem"
             cert.write_text(_PEM_CERTIFICATE, encoding="utf-8")
             output = root / "out"
@@ -611,6 +615,9 @@ class SignToolUnitTest(unittest.TestCase):
 
             def _fake_codesign_directory(cmd: list[str], **_kwargs: object) -> None:
                 recorded.append(cmd)
+                staged_info = pathlib.Path(cmd[-2]) / "Contents" / "Info.plist"
+                self.assertTrue(staged_info.is_file())
+                self.assertTrue(os.access(staged_info, os.W_OK))
                 shutil.copytree(cmd[-2], cmd[-1], symlinks=False)
 
             args = self._args()
@@ -630,7 +637,8 @@ class SignToolUnitTest(unittest.TestCase):
             self.assertEqual(len(recorded), 1)
             self.assertFalse((output / "stale.txt").exists())
             self.assertTrue((output / "Contents" / "Info.plist").is_file())
-            self.assertEqual(recorded[0][-2:], [str(source), str(output)])
+            self.assertNotEqual(recorded[0][-2], str(source))
+            self.assertEqual(recorded[0][-1], str(output))
 
     def test_osslsigncode_uses_pem_certificate_without_pkcs12_flags(self) -> None:
         # A unified PEM (certificate plus unencrypted key) is read via
