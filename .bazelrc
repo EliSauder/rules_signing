@@ -1,0 +1,8 @@
+# On Windows, py_binary/py_test default to bundling runfiles into a zip
+# built by Bazel's zipper, which pairs each runfile as `<dest>=<src>`. That
+# format breaks when a runfile's own path contains "=" (e.g. our awkward file
+# name fixtures), since the zipper splits on the first "=" it finds, even if
+# that "=" belongs to <dest> rather than the delimiter. Using real runfiles
+# trees instead of a zip sidesteps that limitation entirely.
+build --enable_runfiles
+build --@rules_python//python/config_settings:build_python_zip=false
