@@ -541,9 +541,14 @@ filegroup(
     name = "awkward_named_files",
     # Bazel's Windows Python zipper currently treats '=' as a runfile mapping
     # separator and fails packaging files whose basename contains '='.
+    # Windows argument marshalling in the signing action currently mangles
+    # non-ASCII relpaths, so keep this fixture ASCII-only for cross-platform CI.
     srcs = glob(
         ["testdata_names/**"],
-        exclude = ["testdata_names/equals=eq.txt"],
+        exclude = [
+            "testdata_names/equals=eq.txt",
+            "testdata_names/unicode-café-中文.txt",
+        ],
     ),
 )
 
