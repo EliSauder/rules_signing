@@ -1,0 +1,37 @@
+load("@rules_signing//signing:defs.bzl", "sign")
+load("@rules_oci//oci:defs.bzl", "oci_image")
+
+genrule(
+    name = "unsigned_outputs",
+    outs = [
+        "bin/app.exe",
+        "docs/readme.txt",
+        "nested/a/b/guide.txt",
+    ],
+    cmd = """
+      mkdir -p $(@D)/bin $(@D)/docs $(@D)/nested/a/b
+      printf 'consumer exe\\n' > $(@D)/bin/app.exe
+      printf 'consumer docs\\n' > $(@D)/docs/readme.txt
+      printf 'consumer nested\\n' > $(@D)/nested/a/b/guide.txt
+    """,
+)
+
+sign(
+    name = "signed_outputs",
+    src = ":unsigned_outputs",
+)
+
+oci_image(
+    name = "unsigned_oci_image",
+    os = "linux",
+    architecture = "amd64",
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+sign(
+    name = "signed_oci_image",
+    src = ":unsigned_oci_image",
+)

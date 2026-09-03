@@ -1,11 +1,11 @@
 def _cosign_toolchain_impl(ctx):
-    cosign = ctx.executable.cosign
+    tool = ctx.file.cosign
     return [
         platform_common.ToolchainInfo(
-            name = ctx.label.name,
-            _cosign = cosign,
+            tool = tool,
+            data = depset([tool]),
         ),
-        DefaultInfo(files = depset([cosign])),
+        DefaultInfo(files = depset([tool])),
     ]
 
 cosign_toolchain = rule(
@@ -13,7 +13,7 @@ cosign_toolchain = rule(
     attrs = {
         "cosign": attr.label(
             cfg = "exec",
-            executable = True,
+            allow_single_file = True,
             mandatory = True,
         ),
     },
@@ -21,13 +21,14 @@ cosign_toolchain = rule(
 )
 
 def _osslsigncode_toolchain_impl(ctx):
-    osslsigncode = ctx.executable.osslsigncode
+    tool = ctx.file.osslsigncode
     return [
         platform_common.ToolchainInfo(
-            name = ctx.label.name,
-            _osslsigncode = osslsigncode,
+            tool = tool,
+            data = depset([tool]),
+            default_timestamp_url = ctx.attr.default_timestamp_url,
         ),
-        DefaultInfo(files = depset([osslsigncode])),
+        DefaultInfo(files = depset([tool])),
     ]
 
 osslsigncode_toolchain = rule(
@@ -35,30 +36,42 @@ osslsigncode_toolchain = rule(
     attrs = {
         "osslsigncode": attr.label(
             cfg = "exec",
-            executable = True,
+            allow_single_file = True,
             mandatory = True,
         ),
+        "default_timestamp_url": attr.string(default = ""),
     },
     provides = [platform_common.ToolchainInfo],
 )
 
 def _openssl_toolchain_impl(ctx):
-    openssl = ctx.executable.openssl
+    tool = ctx.file.openssl
     return [
         platform_common.ToolchainInfo(
-            name = ctx.label.name,
-            _openssl = openssl,
+            tool = tool,
+            # Windows' openssl.exe dynamically loads libcrypto/libssl DLLs
+            # from its own directory; `data` carries those alongside `tool`
+            # so callers can add them as action inputs without needing to
+            # know that Windows needs anything beyond the executable itself.
+            data = depset([tool] + ctx.files.data),
         ),
-        DefaultInfo(files = depset([openssl])),
+        DefaultInfo(files = depset([tool] + ctx.files.data)),
     ]
 
 openssl_toolchain = rule(
     implementation = _openssl_toolchain_impl,
+    doc = "Optional toolchain used to convert PKCS#12 signing material to PEM.",
     attrs = {
         "openssl": attr.label(
             cfg = "exec",
-            executable = True,
+            allow_single_file = True,
             mandatory = True,
+        ),
+        "data": attr.label_list(
+            cfg = "exec",
+            allow_files = True,
+            doc = "Extra files openssl needs alongside it at runtime " +
+                  "(e.g. Windows' libcrypto/libssl DLLs).",
         ),
     },
     provides = [platform_common.ToolchainInfo],

@@ -1,0 +1,15 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+package(default_visibility = ["//visibility:public"])
+
+py_library(
+    name = "sign_tool_lib",
+    srcs = ["sign_tool.py"],
+    deps = ["@signing_pypi//lief"],
+)
+
+py_binary(
+    name = "sign_tool",
+    srcs = ["sign_tool.py"],
+    main = "sign_tool.py",
+    deps = [":sign_tool_lib"],
+)

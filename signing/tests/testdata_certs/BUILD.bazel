@@ -1,0 +1,40 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+
+package(default_visibility = ["//signing/tests:__subpackages__"])
+
+# Throwaway self-signed development certificates. See README.md: the private
+# keys and password are public on purpose and sign nothing but test fixtures.
+exports_files(glob([
+    "*.pem",
+    "*.crt",
+    "*.p12",
+    "*.key",
+    "*.pub",
+]))
+
+filegroup(
+    name = "dev_certificates",
+    srcs = glob([
+        "*.pem",
+        "*.crt",
+        "*.p12",
+        "*.key",
+        "*.pub",
+    ]),
+)
+
+# Maintainer tool, not part of any test. The fixtures it writes are committed so
+# that tests never generate keys or reach the network.
+py_binary(
+    name = "regenerate",
+    srcs = ["regenerate.py"],
+    args = [
+        "--cosign=$(rootpath @signing_cosign//:cosign_file)",
+        "--rcodesign=$(rootpath //signing/tests:codesign_tool)",
+    ],
+    data = [
+        "//signing/tests:codesign_tool",
+        "@signing_cosign//:cosign_file",
+    ],
+    deps = ["@signing_tests_pypi//cryptography"],
+)

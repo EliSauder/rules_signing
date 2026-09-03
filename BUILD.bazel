@@ -1,0 +1,12 @@
+load("//signing:defs.bzl", "sign")
+
+genrule(
+    name = "demo_unsigned_output",
+    outs = ["demo.txt"],
+    cmd = "echo demo > $@",
+)
+
+sign(
+    name = "demo_signed_output",
+    src = ":demo_unsigned_output",
+)

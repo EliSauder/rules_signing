@@ -1,3 +1,7 @@
+# Only toolchain types are declared here. Concrete toolchains are created by
+# the tool repositories (see repositories.bzl) so that this module never
+# depends on them: downstream consumers declare and register their own.
+
 toolchain_type(
     name = "cosign_toolchain_type",
     visibility = ["//visibility:public"],
@@ -8,6 +12,11 @@ toolchain_type(
     visibility = ["//visibility:public"],
 )
 
+exports_files(["toolchains.bzl"])
+
+# Optional: only needed to convert PKCS#12 signing material into the PEM form
+# cosign requires. `sign` resolves it lazily and only fails if a build actually
+# needs the conversion.
 toolchain_type(
     name = "openssl_toolchain_type",
     visibility = ["//visibility:public"],

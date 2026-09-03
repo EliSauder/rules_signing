@@ -109,3 +109,4 @@ COSIGN_HASHES={
     "v2.5.1/cosign-linux-arm64":"sha256:8b0acceb2dcd64eb85a90a302acf585da8734c9cf518088f2b11354012d27091",
     "v2.5.1/cosign-windows-amd64.exe":"sha256:7a2b09add2620ad618a224b7f4bd6adfa8baefa7526047c1fc0ec6c313d69cd6",
 }
+
