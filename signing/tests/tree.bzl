@@ -13,8 +13,9 @@ def _make_tree_impl(ctx):
     for relative_path, content in ctx.attr.files.items():
         target = "{}/{}".format(out.path, relative_path)
         target_q = "'" + target.replace("'", "'\"'\"'") + "'"
+        content_q = "'" + content.replace("'", "'\"'\"'") + "'"
         commands.append("mkdir -p \"$(dirname {})\"".format(target_q))
-        commands.append("printf '%s' {} > {}".format(repr(content), target_q))
+        commands.append("printf '%s' {} > {}".format(content_q, target_q))
 
     ctx.actions.run_shell(
         outputs = [out],

@@ -55,7 +55,7 @@ def _signing_tools_impl(ctx):
 
         for i, t in enumerate(mod.tags.osslsigncode):
             root_osslsigncode = root_osslsigncode or mod.is_root
-            name = _repo_name(mod, "osslsigncode")
+            name = _repo_name(mod, "osslsigncode") if i == 0 else "{}_osslsigncode_{}".format(mod.name, i)
             osslsigncode_repo(
                 name = name,
                 version = t.version if t.version else "2.14",

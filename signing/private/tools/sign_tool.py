@@ -202,6 +202,8 @@ def pkcs12_to_pem(cert_path: str, password: str, tmpdir: str, openssl: str = "")
         )
 
     out = pathlib.Path(tmpdir) / "cert-from-p12.pem"
+    env = dict(os.environ)
+    env["RULES_SIGNING_P12_PASSWORD"] = password
     cmd = [
         openssl,
         "pkcs12",
@@ -214,16 +216,16 @@ def pkcs12_to_pem(cert_path: str, password: str, tmpdir: str, openssl: str = "")
         # certificate rather than the key if they were included.
         "-nocerts",
         "-passin",
-        "pass:{}".format(password),
+        "env:RULES_SIGNING_P12_PASSWORD",
         "-out",
         str(out),
     ]
     try:
-        run_cmd(cmd)
+        run_cmd(cmd, env=env)
     except subprocess.CalledProcessError:
         # Certificates written by older tools use ciphers that OpenSSL 3 only
         # exposes through its legacy provider.
-        run_cmd(cmd + ["-legacy"])
+        run_cmd(cmd + ["-legacy"], env=env)
     return str(out)
 
 
