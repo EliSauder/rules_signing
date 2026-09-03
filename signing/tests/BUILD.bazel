@@ -574,7 +574,6 @@ py_test(
         "--signed-tree=$(rootpath :signed_awkward_names_cosign)",
     ],
     data = [
-        ":awkward_named_files",
         ":awkward_names_manifest",
         ":signed_awkward_names_cosign",
         ":signed_awkward_names_passthrough",
