@@ -101,6 +101,13 @@ sign(
 cc_binary(
     name = "hello",
     srcs = ["testdata_bin/hello.c"],
+    # Only ever built through platform_binary's transition below. Left
+    # buildable at top level, its untransitioned config collides on Windows
+    # hosts with hello_pe's explicit windows_amd64 transition: both are
+    # windows_amd64 with the same toolchain, so cc_binary's implicit
+    # "hello.exe" output lands on the exact same path as hello_exe's copy of
+    # hello_pe, and Bazel rejects the two conflicting actions.
+    tags = ["manual"],
 )
 
 platform_binary(
