@@ -539,7 +539,12 @@ build_test(
 # there.
 filegroup(
     name = "awkward_named_files",
-    srcs = glob(["testdata_names/**"]),
+    # Bazel's Windows Python zipper currently treats '=' as a runfile mapping
+    # separator and fails packaging files whose basename contains '='.
+    srcs = glob(
+        ["testdata_names/**"],
+        exclude = ["testdata_names/equals=eq.txt"],
+    ),
 )
 
 file_name_manifest(
