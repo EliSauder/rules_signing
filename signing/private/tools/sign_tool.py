@@ -503,8 +503,7 @@ def sign_blob_with_cosign(
         raise ValueError("sign_tool: cosign tool path is required for detached signatures")
 
     env = os.environ.copy()
-    if password:
-        env["COSIGN_PASSWORD"] = password
+    env["COSIGN_PASSWORD"] = password if password else ""
     cert_path = resolve_cosign_key(
         tool=tool,
         cert_path=cert_path,
@@ -600,8 +599,7 @@ def sign_oci_layout_with_cosign(
     bundle = signature_dir / "{}.bundle.json".format(root_blob.name)
 
     env = os.environ.copy()
-    if password:
-        env["COSIGN_PASSWORD"] = password
+    env["COSIGN_PASSWORD"] = password if password else ""
     cert_path = resolve_cosign_key(
         tool=tool,
         cert_path=cert_path,

@@ -1212,7 +1212,7 @@ class SignToolUnitTest(unittest.TestCase):
             self.assertIn("-nodes", convert)
             # cosign reads the first PEM block, so certificates must be excluded.
             self.assertIn("-nocerts", convert)
-            self.assertEqual(convert[convert.index("-passin") + 1], "pass:pw")
+            self.assertEqual(convert[convert.index("-passin") + 1], "env:RULES_SIGNING_P12_PASSWORD")
 
             # The imported key must come from the converted PEM, not the p12.
             self.assertEqual(importer[1], "import-key-pair")
