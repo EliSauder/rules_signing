@@ -220,9 +220,17 @@ def _openssl_local_impl(ctx):
     if not binpath:
         fail("openssl '{}' not found as a path or on PATH".format(ctx.attr.path))
 
-    host, _ = _host_platform(ctx)
-    ctx.symlink(binpath, "openssl")
-    ctx.file("BUILD.bazel", _openssl_build("openssl", host))
+    host, windows = _host_platform(ctx)
+
+    # Windows resolves an executable by exact filename -- unlike POSIX
+    # exec(), CreateProcess() does not fall back to appending ".exe" for a
+    # name that lacks it. sign_tool invokes this binary directly (not
+    # through a shell that would apply PATHEXT), so the symlink has to carry
+    # the same extension the real binary uses or it fails with
+    # `FileNotFoundError: [WinError 2]` at signing time.
+    out = "openssl.exe" if windows else "openssl"
+    ctx.symlink(binpath, out)
+    ctx.file("BUILD.bazel", _openssl_build(out, host))
 
 openssl_local_repo = repository_rule(
     implementation = _openssl_local_impl,
