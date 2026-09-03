@@ -181,6 +181,9 @@ class SignatureVerificationTest(unittest.TestCase):
                 self.assertVerifiedBlob(bundle, signed)
 
     def test_oci_image_signature_is_valid(self):
+        if _ARGS.signed_oci is None:
+            self.skipTest("oci_image is excluded on this platform (rules_oci#827)")
+
         layout = pathlib.Path(_rlocation(_ARGS.signed_oci))
         self.assertTrue((layout / "oci-layout").is_file(), layout)
 
@@ -321,7 +324,9 @@ def parse_args(argv):
     parser.add_argument("--macho", action="append", default=[])
     parser.add_argument("--app-bundle", required=True)
     parser.add_argument("--signed-blob", action="append", default=[])
-    parser.add_argument("--signed-oci", required=True)
+    # Omitted on Windows, where oci_image is excluded from the build because
+    # of rules_oci's known Windows gaps (bazel-contrib/rules_oci#827).
+    parser.add_argument("--signed-oci", default=None)
     parser.add_argument("--shared-root", required=True)
     parser.add_argument("--shared-public-key", required=True)
     parser.add_argument("--shared-pe", required=True)

@@ -177,6 +177,13 @@ oci_image(
     name = "unsigned_oci_image",
     architecture = "amd64",
     os = "linux",
+    # rules_oci's Windows support has known gaps (bazel-contrib/rules_oci#827):
+    # the launcher passes a JSON --scratch argument through a .bat wrapper,
+    # and cmd.exe's quoting mangles the embedded quotes before jq sees it.
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
 )
 
 certificate(
@@ -402,7 +409,6 @@ py_test(
         "--signed-blob=$(rootpath :signed_real_blobs)/signing/tests/testdata_sign/docs/nested/guide.txt",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/docs/readme.txt",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/config.yaml",
-        "--signed-oci=$(rootpath :signed_real_oci_image)",
         # The single certificate that drives all three signers. Verification
         # trusts only the root, so the intermediate has to have travelled
         # inside each signature by way of the certificate's `ca_file`.
@@ -412,7 +418,12 @@ py_test(
         "--shared-macho=$(rootpath :signed_shared_macho)/signing/tests/hello_macho",
         "--shared-blob=$(rootpath :signed_shared_blobs)/signing/tests/testdata_sign/docs/readme.txt",
         "--shared-blob=$(rootpath :signed_shared_blobs_from_p12)/signing/tests/testdata_sign/docs/readme.txt",
-    ],
+    ] + select({
+        # oci_image (and anything depending on it) is target_compatible_with
+        # excluded on Windows; see unsigned_oci_image for why.
+        "@platforms//os:windows": [],
+        "//conditions:default": ["--signed-oci=$(rootpath :signed_real_oci_image)"],
+    }),
     data = [
         ":codesign_tool",
         ":signed_real_app_bundle",
@@ -420,7 +431,6 @@ py_test(
         ":signed_real_blobs",
         ":signed_real_macho_p12",
         ":signed_real_macho_pem",
-        ":signed_real_oci_image",
         ":signed_real_pe_base64",
         ":signed_real_pe_detected",
         ":signed_real_pe_p12",
@@ -435,7 +445,10 @@ py_test(
         "//signing/tests/testdata_certs:shared_root.crt",
         "@signing_cosign//:cosign_file",
         "@signing_osslsigncode//:osslsigncode_file",
-    ],
+    ] + select({
+        "@platforms//os:windows": [],
+        "//conditions:default": [":signed_real_oci_image"],
+    }),
     deps = [
         "//signing/private/tools:sign_tool_lib",
         "@rules_python//python/runfiles",
