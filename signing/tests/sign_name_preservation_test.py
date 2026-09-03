@@ -72,7 +72,7 @@ class SignNamePreservationTest(unittest.TestCase):
     def test_names_are_worth_testing(self) -> None:
         """The fixtures only prove anything if they are actually awkward."""
         joined = "".join(self.expected)
-        for char in " '&$#;()[]{}%+,!`~@":
+        for char in " '&$#;()[]{}%+=,!`~@":
             self.assertIn(char, joined, f"no fixture exercises {char!r}")
 
     def test_passthrough_copies_reproduce_every_name_exactly(self) -> None:

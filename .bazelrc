@@ -4,5 +4,12 @@
 # name fixtures), since the zipper splits on the first "=" it finds, even if
 # that "=" belongs to <dest> rather than the delimiter. Using real runfiles
 # trees instead of a zip sidesteps that limitation entirely.
+#
+# rules_python decides whether to build the zip by reading either its own
+# Starlark flag (below) or, when the legacy `ctx.fragments.py` API is still
+# available (true for Bazel 8), the deprecated native `--build_python_zip`
+# flag instead -- see rules_python's `read_possibly_native_flag`. Both must be
+# set to `false`/off so the behavior is consistent across Bazel 8 and 9.
 build --enable_runfiles
 build --@rules_python//python/config_settings:build_python_zip=false
+build --build_python_zip=false
