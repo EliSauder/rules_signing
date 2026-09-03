@@ -812,6 +812,9 @@ def sign_directory(
     if selected == "codesign":
         # macOS bundles (.app/.pkg) are directories, but codesign signs
         # them as a single unit rather than file by file.
+        out_path = pathlib.Path(outdir)
+        if out_path.exists():
+            shutil.rmtree(out_path)
         sign_with_codesign(
             tool=args.codesign_tool,
             infile=indir,

@@ -595,6 +595,43 @@ class SignToolUnitTest(unittest.TestCase):
             self.assertNotIn("--p12-password", cmd)
             self.assertEqual(cmd[cmd.index("--binary-identifier") + 1], "com.rulessigning.test")
 
+    def test_codesign_directory_replaces_existing_output_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "hello.app"
+            (source / "Contents").mkdir(parents=True)
+            (source / "Contents" / "Info.plist").write_text("plist", encoding="utf-8")
+            cert = root / "cert.pem"
+            cert.write_text(_PEM_CERTIFICATE, encoding="utf-8")
+            output = root / "out"
+            output.mkdir(parents=True)
+            (output / "stale.txt").write_text("stale", encoding="utf-8")
+
+            recorded: list[list[str]] = []
+
+            def _fake_codesign_directory(cmd: list[str], **_kwargs: object) -> None:
+                recorded.append(cmd)
+                shutil.copytree(cmd[-2], cmd[-1], symlinks=False)
+
+            args = self._args()
+            args.tool = "codesign"
+            with mock.patch.object(sign_tool, "run_cmd", side_effect=_fake_codesign_directory):
+                sign_tool.sign_one(
+                    tool_mode="codesign",
+                    relpath="",
+                    infile=str(source),
+                    outfile=str(output),
+                    args=args,
+                    cert_path=str(cert),
+                    password="",
+                    identity="dev.rules-signing.hello",
+                )
+
+            self.assertEqual(len(recorded), 1)
+            self.assertFalse((output / "stale.txt").exists())
+            self.assertTrue((output / "Contents" / "Info.plist").is_file())
+            self.assertEqual(recorded[0][-2:], [str(source), str(output)])
+
     def test_osslsigncode_uses_pem_certificate_without_pkcs12_flags(self) -> None:
         # A unified PEM (certificate plus unencrypted key) is read via
         # -certs/-key instead of being forced through -pkcs12/-pass.
