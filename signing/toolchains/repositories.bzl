@@ -186,6 +186,10 @@ def _osslsigncode_repo_impl(ctx):
     )
 
     bin_name = "osslsigncode.exe" if windows else "osslsigncode"
+    if not windows:
+        ctx.execute(["chmod", "+x", bin_name])
+
+    bin_name = "osslsigncode.exe" if windows else "osslsigncode"
     ctx.file("BUILD.bazel", _emit_toolchain_build(
         name = "osslsigncode",
         src = bin_name,

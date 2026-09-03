@@ -8,11 +8,13 @@ execution time. These fixtures exercise that path end to end.
 def _make_tree_impl(ctx):
     out = ctx.actions.declare_directory(ctx.label.name)
 
-    commands = ["mkdir -p {}".format(out.path)]
+    out_q = "'" + out.path.replace("'", "'\"'\"'") + "'"
+    commands = ["mkdir -p {}".format(out_q)]
     for relative_path, content in ctx.attr.files.items():
         target = "{}/{}".format(out.path, relative_path)
-        commands.append("mkdir -p $(dirname {})".format(target))
-        commands.append("printf '%s' {} > {}".format(repr(content), target))
+        target_q = "'" + target.replace("'", "'\"'\"'") + "'"
+        commands.append("mkdir -p \"$(dirname {})\"".format(target_q))
+        commands.append("printf '%s' {} > {}".format(repr(content), target_q))
 
     ctx.actions.run_shell(
         outputs = [out],

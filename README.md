@@ -188,7 +188,7 @@ optional openssl toolchain is registered:
 
 ```starlark
 signing_tools = use_extension("@rules_signing//signing:extensions.bzl", "signing_tools")
-signing_tools.openssl()
+signing_tools.openssl(path = "openssl")
 use_repo(signing_tools, "signing_openssl")
 
 register_toolchains("@signing_openssl//:openssl_toolchain")

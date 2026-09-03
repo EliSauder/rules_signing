@@ -66,7 +66,7 @@ def _signing_tools_impl(ctx):
             _add_dep(ctx, t, name, deps, dev_deps)
 
         for i, t in enumerate(mod.tags.openssl):
-            name = _repo_name(mod, "openssl")
+            name = _repo_name(mod, "openssl") if i == 0 else "{}_openssl_{}".format(mod.name, i)
             if t.path:
                 openssl_local_repo(
                     name = name,

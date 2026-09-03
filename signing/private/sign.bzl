@@ -62,11 +62,8 @@ def _needs_toolchain(srcs, selected_tool, tool_kind):
     if selected_tool != "auto":
         return False
 
-    # cosign is the universal fallback in auto mode: anything without a native
-    # signer is signed with a detached cosign signature, so it must always be
-    # present.
-    if tool_kind == "cosign":
-        return True
+    # For cosign, require the toolchain only if at least one input would be
+    # routed to cosign (unknown extensions) or requires runtime detection.
 
     for f in srcs:
         # Directory artifact contents are only available at execution time, so

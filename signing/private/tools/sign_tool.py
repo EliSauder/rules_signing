@@ -558,8 +558,7 @@ def is_oci_layout(path: str) -> bool:
 
 
 def resolve_root_blob_for_index(layout_dir: str) -> pathlib.Path:
-    """Resolves the root blob of the oci layout using the mainefst digest."""
-
+    """Resolves the root blob of the oci layout using the manifest digest."""
     index_path = pathlib.Path(layout_dir) / "index.json"
     index_data = json.loads(index_path.read_text(encoding="utf-8"))
     manifests = index_data.get("manifests")
@@ -655,7 +654,8 @@ def sign_with_osslsigncode(
     timestamp_url = resolve_timestamp_url(timestamp_url, "osslsigncode")
     if timestamp_url:
         cmd.extend(["-t", timestamp_url])
-    if name:        cmd.extend(["-n", name])
+    if name:
+        cmd.extend(["-n", name])
     if url:
         cmd.extend(["-i", url])
     cmd.extend(["-in", infile, "-out", outfile])
