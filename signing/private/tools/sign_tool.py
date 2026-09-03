@@ -97,6 +97,27 @@ def load_stamp_files(paths: Iterable[str]) -> Dict[str, str]:
     return data
 
 
+def load_rel_src_manifest(path: str) -> list:
+    """Reads (relpath, src) pairs written by sign.bzl's `rel_src_manifest`.
+
+    The pairs travel through a file instead of repeated --rel/--src argv
+    tokens so that file names are never subject to the OS's native
+    command-line encoding (notably Windows' ANSI code page, which cannot
+    represent every Unicode character); reading the manifest as UTF-8 text
+    keeps names intact on every platform.
+    """
+
+    pairs = []
+    if not path:
+        return pairs
+    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+        if not line:
+            continue
+        relpath, _, src = line.partition("\t")
+        pairs.append((relpath, src))
+    return pairs
+
+
 def parse_defaults(kvs: Iterable[str]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for kv in kvs:
@@ -904,8 +925,7 @@ def main() -> None:
     parser.add_argument("--in", dest="infile", default="")
     parser.add_argument("--out", default="")
     parser.add_argument("--out-dir", default="")
-    parser.add_argument("--rel", action="append", default=[])
-    parser.add_argument("--src", action="append", default=[])
+    parser.add_argument("--rel-src-manifest", default="")
 
     parser.add_argument("--osslsigncode-tool", default="osslsigncode")
     parser.add_argument("--cosign-tool", default="")
@@ -947,8 +967,7 @@ def main() -> None:
     parser.add_argument("--version-file", default="")
     args = parser.parse_args()
 
-    if len(args.rel) != len(args.src):
-        raise ValueError("sign_tool: --rel and --src counts must match")
+    rel_src_pairs = load_rel_src_manifest(args.rel_src_manifest)
 
     stamps = load_stamp_files([args.info_file, args.version_file])
     defaults = parse_defaults(args.stamp_default)
@@ -975,7 +994,7 @@ def main() -> None:
         )
 
         pathlib.Path(args.out_dir).mkdir(parents=True, exist_ok=True)
-        for relpath, src in zip(args.rel, args.src):
+        for relpath, src in rel_src_pairs:
             out = str(pathlib.Path(args.out_dir) / relpath)
             sign_one(
                 tool_mode=args.tool,

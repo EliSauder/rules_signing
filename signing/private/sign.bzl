@@ -155,14 +155,24 @@ def _sign_impl(ctx):
     if ctx.file.entitlements:
         args.add("--entitlements", ctx.file.entitlements.path)
 
+    # Passing each (relpath, src) pair as separate --rel/--src argv tokens
+    # would round-trip file names through the OS's native command-line
+    # encoding. On Windows that's the system's ANSI code page, not UTF-8, so
+    # any relpath character outside it (e.g. non-Latin scripts) arrives at
+    # sign_tool corrupted. Writing the pairs to a manifest file instead keeps
+    # them as file content, which Bazel always writes and Python always reads
+    # as UTF-8, sidestepping the OS argv encoding entirely.
     flatten_single_directory = len(srcs) == 1 and srcs[0].is_directory
+    manifest_lines = []
     for f in srcs:
         relpath = "" if flatten_single_directory and f.is_directory else f.short_path
-        args.add("--rel", relpath)
-        args.add("--src", f.path)
+        manifest_lines.append("{}\t{}".format(relpath, f.path))
+    rel_src_manifest = ctx.actions.declare_file(ctx.label.name + ".rel_src_manifest")
+    ctx.actions.write(rel_src_manifest, "".join([line + "\n" for line in manifest_lines]))
+    args.add("--rel-src-manifest", rel_src_manifest.path)
 
     extra_inputs = add_cert_args(ctx, args, cert)
-    inputs = srcs + extra_inputs
+    inputs = srcs + extra_inputs + [rel_src_manifest]
     tools = [ctx.executable._tool]
     if ctx.file.entitlements:
         inputs.append(ctx.file.entitlements)
