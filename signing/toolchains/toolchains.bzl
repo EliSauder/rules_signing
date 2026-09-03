@@ -12,6 +12,7 @@ cosign_toolchain = rule(
     implementation = _cosign_toolchain_impl,
     attrs = {
         "cosign": attr.label(
+            cfg = "exec",
             allow_single_file = True,
             mandatory = True,
         ),
@@ -34,6 +35,7 @@ osslsigncode_toolchain = rule(
     implementation = _osslsigncode_toolchain_impl,
     attrs = {
         "osslsigncode": attr.label(
+            cfg = "exec",
             allow_single_file = True,
             mandatory = True,
         ),
@@ -61,10 +63,12 @@ openssl_toolchain = rule(
     doc = "Optional toolchain used to convert PKCS#12 signing material to PEM.",
     attrs = {
         "openssl": attr.label(
+            cfg = "exec",
             allow_single_file = True,
             mandatory = True,
         ),
         "data": attr.label_list(
+            cfg = "exec",
             allow_files = True,
             doc = "Extra files openssl needs alongside it at runtime " +
                   "(e.g. Windows' libcrypto/libssl DLLs).",
