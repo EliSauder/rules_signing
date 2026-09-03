@@ -19,4 +19,14 @@ build --build_python_zip=false
 # rather than merely falling back to `stamp_defaults`. This script only
 # base64-encodes an already-checked-in test fixture, so it stays cheap enough
 # to run on every build rather than being opt-in behind --config=release.
-build --workspace_status_command=tools/workspace_status.sh
+#
+# Bazel executes workspace_status_command directly rather than through a
+# shell, so a bare .py file's shebang is never honored on Windows (there is
+# no CreateProcess-level association for it). --enable_platform_specific_config
+# picks the `build:<os>` line matching the host OS, letting Windows point at
+# a .bat launcher that invokes Python explicitly, while POSIX hosts run the
+# Python script directly via its shebang.
+common --enable_platform_specific_config
+build:linux --workspace_status_command=tools/workspace_status.py
+build:macos --workspace_status_command=tools/workspace_status.py
+build:windows --workspace_status_command=tools/workspace_status.bat
