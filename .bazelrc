@@ -13,3 +13,10 @@
 build --enable_runfiles
 build --@rules_python//python/config_settings:build_python_zip=false
 build --build_python_zip=false
+
+# Provides a real STABLE_ value for //signing/tests:stamp_attr_test, so that
+# target's `stamp = 1` certificate is proven to read genuine workspace status
+# rather than merely falling back to `stamp_defaults`. This script only
+# base64-encodes an already-checked-in test fixture, so it stays cheap enough
+# to run on every build rather than being opt-in behind --config=release.
+build --workspace_status_command=tools/workspace_status.sh
