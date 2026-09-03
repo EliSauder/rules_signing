@@ -72,11 +72,15 @@ def _signing_tools_impl(ctx):
                     name = name,
                     path = t.path,
                 )
-            else:
+            elif t.label:
                 openssl_label_repo(
                     name = name,
                     label = t.label,
                 )
+            else:
+                fail("signing_tools.openssl() needs either `path` (to " +
+                     "adopt a host binary) or `label` (a target built by " +
+                     "another module).")
             _add_dep(ctx, t, name, deps, dev_deps)
 
     if not root_cosign:
@@ -119,12 +123,14 @@ _osslsigncode_tag = tag_class(attrs = {
 
 _openssl_tag = tag_class(attrs = {
     "path": attr.string(
-        doc = "Path to an openssl binary already installed on the host. " +
-              "Takes precedence over `label`.",
+        doc = "Path to an openssl binary already installed on the host, " +
+              "or a bare program name to resolve against PATH. Takes " +
+              "precedence over `label`.",
     ),
     "label": attr.label(
-        default = "@openssl//:openssl",
-        doc = "Target providing an openssl binary, built by another module.",
+        doc = "Target providing an openssl binary, built by another " +
+              "module. Only resolved when `path` is unset, so callers who " +
+              "adopt a host binary never need to depend on that module.",
     ),
 })
 

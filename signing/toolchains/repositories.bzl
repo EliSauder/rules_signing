@@ -210,9 +210,15 @@ def _openssl_build(src, host):
     )
 
 def _openssl_local_impl(ctx):
+    # `path` doubles as either a literal filesystem path (e.g.
+    # "/usr/bin/openssl") or a bare program name to resolve against PATH
+    # (e.g. "openssl"), so the same tag works unmodified across Linux, macOS
+    # and Windows hosts, all of which ship openssl but at different paths.
     binpath = ctx.path(ctx.attr.path)
     if not binpath.exists:
-        fail("openssl path '{}' does not exist".format(ctx.attr.path))
+        binpath = ctx.which(ctx.attr.path)
+    if not binpath:
+        fail("openssl '{}' not found as a path or on PATH".format(ctx.attr.path))
 
     host, _ = _host_platform(ctx)
     ctx.symlink(binpath, "openssl")
@@ -220,7 +226,8 @@ def _openssl_local_impl(ctx):
 
 openssl_local_repo = repository_rule(
     implementation = _openssl_local_impl,
-    doc = "Repository rule that adopts an openssl binary already present on the host.",
+    doc = "Repository rule that adopts an openssl binary already present on " +
+          "the host, either at a literal path or resolved from PATH.",
     attrs = {
         "path": attr.string(mandatory = True),
     },
