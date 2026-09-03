@@ -1,5 +1,5 @@
 bcr_test_module:
-  module_path: "tests"
+  module_path: "usagetest"
   matrix:
     bazel: ["8.*", "9.*"]
     platform: ["debian11", "ubuntu2204", "windows", "macos", "macos_arm64"]

@@ -291,7 +291,7 @@ sign(
 
 # Exercises the `stamp` attribute on both `certificate` and `sign` at each of
 # its three values, using a base64-templated certificate whose real value
-# comes from `tools/workspace_status.sh` (see .bazelrc's
+# comes from `tools/workspace_status.py` (see .bazelrc's
 # --workspace_status_command), so successful signing proves genuine
 # workspace status was read, not merely `stamp_defaults` fallback:
 #
