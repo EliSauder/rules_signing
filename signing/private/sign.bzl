@@ -1,3 +1,4 @@
+load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS", "maybe_stamp")
 load(
     "//signing/private:common.bzl",
     "add_cert_args",
@@ -171,7 +172,8 @@ def _sign_impl(ctx):
     ctx.actions.write(rel_src_manifest, "".join([line + "\n" for line in manifest_lines]))
     args.add("--rel-src-manifest", rel_src_manifest.path)
 
-    extra_inputs = add_cert_args(ctx, args, cert)
+    stamp = maybe_stamp(ctx)
+    extra_inputs = add_cert_args(args, cert, stamp)
     inputs = srcs + extra_inputs + [rel_src_manifest]
     tools = [ctx.executable._tool]
     if ctx.file.entitlements:
@@ -212,7 +214,7 @@ def _sign_impl(ctx):
 sign = rule(
     implementation = _sign_impl,
     doc = "Signs all files from `src`, preserving relative output structure.",
-    attrs = {
+    attrs = dict({
         "src": attr.label(
             mandatory = True,
             providers = [[DefaultInfo]],
@@ -260,7 +262,7 @@ sign = rule(
             executable = True,
             cfg = "exec",
         ),
-    },
+    }, **STAMP_ATTRS),
     toolchains = [
         config_common.toolchain_type(_OSSLSIGNCODE_TOOLCHAIN, mandatory = False),
         config_common.toolchain_type(_COSIGN_TOOLCHAIN, mandatory = False),

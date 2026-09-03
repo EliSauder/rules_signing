@@ -22,7 +22,20 @@ def cert_needs_stamp(info):
             return True
     return False
 
-def add_cert_args(ctx, args, info):
+def add_cert_args(args, info, stamp):
+    """Adds certificate-related args/inputs to `args`.
+
+    Args:
+        args: an Args object to append to.
+        info: a SigningCertificateInfo, or None.
+        stamp: the result of `@bazel_lib//lib:stamping.bzl`'s `maybe_stamp(ctx)`
+            (a struct with `stable_status_file`/`volatile_status_file`), or
+            None if stamping is disabled for this target/build. Only consulted
+            when a certificate template actually needs stamp values.
+
+    Returns:
+        A list of extra Files that must be added to the action's inputs.
+    """
     extra = []
 
     if info == None:
@@ -47,10 +60,10 @@ def add_cert_args(ctx, args, info):
     for k, v in info.stamp_defaults.items():
         args.add("--stamp-default", "{}={}".format(k, v))
 
-    if cert_needs_stamp(info):
-        args.add("--info-file", ctx.info_file)
-        args.add("--version-file", ctx.version_file)
-        extra.append(ctx.info_file)
-        extra.append(ctx.version_file)
+    if cert_needs_stamp(info) and stamp:
+        args.add("--info-file", stamp.stable_status_file)
+        args.add("--version-file", stamp.volatile_status_file)
+        extra.append(stamp.stable_status_file)
+        extra.append(stamp.volatile_status_file)
 
     return extra

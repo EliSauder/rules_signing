@@ -11,6 +11,12 @@ bazel_dep(name = "rules_oci", version = "2.3.0")
 bazel_dep(name = "codesign.bzl", version = "0.0.13")
 bazel_dep(name = "package_metadata", version = "0.0.13")
 
+# Provides the standard `stamp` attribute / `--stamp` handling (STAMP_ATTRS,
+# maybe_stamp) used by rules that embed workspace status into their outputs,
+# so rules_signing follows the same convention as the rest of the ecosystem
+# instead of reinventing it.
+bazel_dep(name = "bazel_lib", version = "3.7.2")
+
 # openssl is adopted from the host (see signing_tools.openssl() below)
 # rather than built from source: GitHub's ubuntu-latest, macos-latest and
 # windows-latest runners all ship a usable openssl, and building it

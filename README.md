@@ -99,6 +99,34 @@ The `sign` target emits a **directory artifact** containing the signed/copied fi
 
 For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs.
 
+### Stamping
+
+`{KEY}` placeholders in `certificate`/`password`/`identity` are resolved
+against Bazel's workspace status (`--stamp` and `--workspace_status_command`),
+using the same convention as the rest of the Bazel ecosystem: `sign` accepts
+the standard `stamp` attribute from
+[`@bazel_lib//lib:stamping.bzl`](https://github.com/bazel-contrib/bazel-lib/blob/main/lib/stamping.bzl)
+(`STAMP_ATTRS`, `maybe_stamp`).
+
+- `stamp = -1` (the default) follows the build-wide `--stamp`/`--nostamp` flag.
+- `stamp = 1` always stamps this target, even with `--nostamp`.
+- `stamp = 0` never stamps this target, even with `--stamp`.
+
+Stamping is only consulted when a template actually contains a `{KEY}`
+placeholder, and real values are only read from the workspace status files
+when stamping is enabled for the build/target; otherwise unresolved keys fall
+back to `stamp_defaults`. This keeps a plain `bazel build` reproducible and
+free of the volatile-status dependency unless you explicitly opt in:
+
+```starlark
+sign(
+    name = "signed_bundle",
+    src = ":artifact_bundle",
+    certificate = ":release_cert",
+    stamp = 1,  # or rely on --stamp / --nostamp
+)
+```
+
 ### Transparency log
 
 `cosign sign-blob` publishes the artifact digest to the public Rekor
