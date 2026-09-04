@@ -9,10 +9,19 @@ def default_out(ctx, src):
         return "{}.signed{}".format(base[:dot], base[dot:])
     return "{}.signed".format(base)
 
-def cert_info(ctx):
-    if not ctx.attr.certificate:
+def cert_info(ctx, attr_name = "certificate"):
+    """Returns the SigningCertificateInfo from `ctx`, or None if unset.
+
+    Args:
+        ctx: the rule context.
+        attr_name: the attribute holding the `certificate` label. Rules that
+            declare the signing attributes under a prefix (see
+            `signing_attrs`) pass the prefixed name.
+    """
+    cert = getattr(ctx.attr, attr_name, None)
+    if not cert:
         return None
-    return ctx.attr.certificate[SigningCertificateInfo]
+    return cert[SigningCertificateInfo]
 
 def cert_needs_stamp(info):
     """Whether `sign`'s own action still needs workspace status files.

@@ -307,6 +307,96 @@ certificate(
 certificates in the CMS structure. `cosign` ignores `ca_file`, since bare-key
 trust has no chain to build.
 
+## Calling the signer from your own rule
+
+`sign` covers "take these files, give me signed copies". A rule that *produces*
+a signable artifact often needs something different: the thing to sign does not
+exist at analysis time, and sometimes cannot be signed by a separate action at
+all. NSIS is the standard example. Its uninstaller only exists during the
+`makensis` run, and is signed through the `!uninstfinalize` hook, which hands a
+signer a path and expects the file at that path to come back signed. There is no
+intermediate artifact to feed to a `sign` target.
+
+`//signing:actions.bzl` exposes the pieces `sign` is built from so a rule can do
+this itself, without reimplementing certificate handling, toolchain resolution
+or the accompanying diagnostics.
+
+```starlark
+load(
+    "@rules_signing//signing:actions.bzl",
+    "SIGNING_ATTRS",
+    "SIGNING_TOOLCHAINS",
+    "signing_argv",
+    "signing_context",
+)
+
+def _installer_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".exe")
+
+    # Nothing to inspect at analysis time, so name the signer this rule always
+    # needs. A missing toolchain then fails during analysis with an actionable
+    # message instead of part-way through the action.
+    sctx = signing_context(
+        ctx,
+        require = ["osslsigncode"],
+        require_reason = "an NSIS uninstaller is always a PE executable",
+    )
+
+    # Omitting `outfile` signs in place, which is what a finalize hook wants.
+    # "%1" is NSIS' placeholder for the file it just produced.
+    command = signing_argv(sctx, infile = "%1")
+
+    ctx.actions.run(
+        executable = ctx.executable._makensis,
+        arguments = [...],  # pass `command` through to !finalize/!uninstfinalize
+        inputs = depset([...], transitive = [sctx.inputs]),
+        tools = sctx.tools,
+        outputs = [out],
+        env = sctx.env,
+    )
+
+installer = rule(
+    implementation = _installer_impl,
+    attrs = dict({...}, **SIGNING_ATTRS),
+    toolchains = SIGNING_TOOLCHAINS,
+)
+```
+
+`SIGNING_ATTRS` contributes the signing options under a `signing_` prefix —
+`signing_certificate`, `signing_tool`, `signing_timestamp_url` and the rest —
+so your rule gains `sign`'s whole surface without declaring it, and without the
+generic names (`tool`, `url`, `description`, `options`) colliding with
+attributes your rule already defines:
+
+```starlark
+installer(
+    name = "my_installer",
+    tool = "my-own-packager",          # your rule's attribute
+    signing_tool = "osslsigncode",     # rules_signing's
+    signing_certificate = ":release_cert",
+)
+```
+
+If you would rather use the bare names, call `signing_attrs(prefix = "")` and
+pass the matching `attr_prefix = ""` to `signing_context`. Any other prefix
+works the same way, as long as the two agree. (`stamp` is contributed
+unprefixed either way, since `maybe_stamp` looks it up by that exact name.)
+
+`signing_context` returns the resolved signer plus the `inputs`, `tools` and
+`env` your action must declare.
+
+Everything that is not an input or output path — including certificate paths and
+passwords — goes into a parameter file that `signing_argv` references as
+`@<path>`. That keeps credentials out of process listings and out of any script
+your rule generates, and avoids the embedding tool's quoting rules entirely. The
+resulting command is just two fixed tokens plus the path being signed.
+
+`signing_argv` also builds commands that sign to a separate output (pass
+`outfile`), or that sign many files in one pass (`rel_src_manifest` with
+`out_dir`). Use `path_fn` when the consuming tool needs a different path
+spelling, such as Windows-style separators. For the plain "sign these files,
+keep their layout" case, call `sign_action` and skip building the command line.
+
 ## Standalone consumer module test
 
 A real consumer-module workspace lives at `usagetest/` with its own `MODULE.bazel`.

@@ -20,6 +20,17 @@ bzl_library(
 )
 
 bzl_library(
+    name = "action_bzl",
+    srcs = ["action.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":common_bzl",
+        "//signing:providers_bzl",
+        "@bazel_lib//lib:stamping",
+    ],
+)
+
+bzl_library(
     name = "defs_bzl",
     srcs = [
         "certificate.bzl",
@@ -27,6 +38,7 @@ bzl_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":action_bzl",
         ":common_bzl",
         "//signing:providers_bzl",
         "@bazel_lib//lib:stamping",
