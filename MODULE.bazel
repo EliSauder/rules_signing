@@ -28,7 +28,7 @@ bazel_dep(name = "bazel_lib", version = "3.7.2")
 # Needed to cross-compile the real Mach-O/PE test binaries used to verify
 # content-based tool detection. Test-only, so it never reaches consumers of
 # this ruleset.
-bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0", dev_dependency = True)
+bazel_dep(name = "hermetic_cc_toolchain", version = "4.3.0", dev_dependency = True)
 
 zig_toolchains = use_extension(
     "@hermetic_cc_toolchain//toolchain:ext.bzl",
