@@ -1321,7 +1321,9 @@ class SignToolUnitTest(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(
-                sign_tool.expand_argfiles(["@" + str(params), "--in", "%1"]),
+                sign_tool.expand_argfiles(
+                    ["--args-file=" + str(params), "--in", "%1"]
+                ),
                 [
                     "--tool",
                     "osslsigncode",
@@ -1341,25 +1343,48 @@ class SignToolUnitTest(unittest.TestCase):
             params = pathlib.Path(tmp) / "p"
             params.write_text("--name\ncafé-中文\n", encoding="utf-8")
             self.assertEqual(
-                sign_tool.expand_argfiles(["@" + str(params)]),
+                sign_tool.expand_argfiles(["--args-file", str(params)]),
                 ["--name", "café-中文"],
             )
 
-    def test_argfile_escape_hatch_and_error_paths(self) -> None:
-        # A literal leading @ is doubled, and a self-referential file is
-        # reported rather than hanging.
-        self.assertEqual(sign_tool.expand_argfiles(["@@literal"]), ["@literal"])
-        self.assertEqual(sign_tool.expand_argfiles(["@"]), ["@"])
+    def test_argfile_flag_is_not_the_at_prefix_convention(self) -> None:
+        # Git for Windows' bash is backed by the Cygwin/MSYS2 runtime, which
+        # expands `@file` arguments itself and splits the file on whitespace
+        # rather than on lines. A signer invoked through any such intermediary
+        # would receive a description like "rules_signing development
+        # signature" as three separate arguments, so `@` must stay an ordinary
+        # argument here and the real flag must be one nothing else claims.
+        with tempfile.TemporaryDirectory() as tmp:
+            params = pathlib.Path(tmp) / "p"
+            params.write_text("--name\nrules signing sig\n", encoding="utf-8")
+
+            self.assertEqual(
+                sign_tool.expand_argfiles(["@" + str(params)]),
+                ["@" + str(params)],
+            )
+            for spelling in (
+                ["--args-file=" + str(params)],
+                ["--args-file", str(params)],
+            ):
+                self.assertEqual(
+                    sign_tool.expand_argfiles(spelling),
+                    ["--name", "rules signing sig"],
+                )
+
+    def test_argfile_error_paths(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.expand_argfiles(["--args-file"])
+        self.assertIn("needs a path", str(ctx.exception))
 
         with self.assertRaises(SystemExit) as ctx:
-            sign_tool.expand_argfiles(["@/nonexistent/params/file"])
+            sign_tool.expand_argfiles(["--args-file=/nonexistent/params/file"])
         self.assertIn("cannot read argument file", str(ctx.exception))
 
         with tempfile.TemporaryDirectory() as tmp:
             loop = pathlib.Path(tmp) / "loop"
-            loop.write_text("@" + str(loop) + "\n", encoding="utf-8")
+            loop.write_text("--args-file=" + str(loop) + "\n", encoding="utf-8")
             with self.assertRaises(SystemExit) as ctx:
-                sign_tool.expand_argfiles(["@" + str(loop)])
+                sign_tool.expand_argfiles(["--args-file=" + str(loop)])
             self.assertIn("nested more than", str(ctx.exception))
 
     def test_single_file_mode_signs_in_place_by_default(self) -> None:

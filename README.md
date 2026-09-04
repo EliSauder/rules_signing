@@ -387,9 +387,17 @@ unprefixed either way, since `maybe_stamp` looks it up by that exact name.)
 
 Everything that is not an input or output path — including certificate paths and
 passwords — goes into a parameter file that `signing_argv` references as
-`@<path>`. That keeps credentials out of process listings and out of any script
-your rule generates, and avoids the embedding tool's quoting rules entirely. The
-resulting command is just two fixed tokens plus the path being signed.
+`--args-file=<path>`. That keeps credentials out of process listings and out of
+any script your rule generates, and avoids the embedding tool's quoting rules
+entirely. The resulting command is just two fixed tokens plus the path being
+signed.
+
+Note the flag is deliberately *not* the customary `@<path>` spelling. The
+Cygwin/MSYS2 runtime behind Git for Windows' `bash` expands `@file` arguments
+itself, splitting the file on whitespace rather than on lines, which tears any
+argument containing a space into several. Since the point of the parameter file
+is to survive being handed through an intermediary process, it uses a flag no
+intermediary claims.
 
 `signing_argv` also builds commands that sign to a separate output (pass
 `outfile`), or that sign many files in one pass (`rel_src_manifest` with

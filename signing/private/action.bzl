@@ -402,8 +402,8 @@ def signing_argv(
             spelling than Bazel's (for example a Windows-style path).
 
     Returns:
-        A list of strings: the executable, the `@params` reference, and the
-        arguments naming this invocation's input and output.
+        A list of strings: the executable, the `--args-file` reference, and
+        the arguments naming this invocation's input and output.
     """
     if (infile == None) == (rel_src_manifest == None):
         fail("rules_signing: signing_argv needs exactly one of `infile` or `rel_src_manifest`")
@@ -414,7 +414,7 @@ def signing_argv(
         p = v.path if type(v) == "File" else v
         return path_fn(p) if path_fn else p
 
-    argv = [path(sctx.executable), "@" + path(sctx.params_file)]
+    argv = [path(sctx.executable), "--args-file=" + path(sctx.params_file)]
     if infile != None:
         argv.extend(["--in", path(infile)])
         if outfile != None:

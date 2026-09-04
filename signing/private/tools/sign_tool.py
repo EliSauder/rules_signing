@@ -125,15 +125,11 @@ def unescape_param_file_line(line: str) -> str:
     return "".join(out)
 
 
-def expand_argfiles(argv: Sequence[str], _depth: int = 0) -> list:
-    """Expands `@file` arguments in `argv` into the arguments they contain.
+ARGS_FILE_FLAG = "--args-file"
 
-    This exists instead of argparse's own `fromfile_prefix_chars` because
-    argparse opens the file with the interpreter's locale encoding, which on
-    Windows is the ANSI code page and cannot represent every path or password
-    a caller might legitimately pass. Reading the file as UTF-8 here keeps
-    arguments intact on every platform, matching how `--rel-src-manifest` is
-    handled.
+
+def expand_argfiles(argv: Sequence[str], _depth: int = 0) -> list:
+    """Expands `--args-file` arguments into the arguments the file contains.
 
     Argument files let a caller keep certificate paths, passwords and other
     options out of a command line that would otherwise be visible to other
@@ -142,9 +138,25 @@ def expand_argfiles(argv: Sequence[str], _depth: int = 0) -> list:
     inside a third-party build step (for example NSIS' `!finalize` and
     `!uninstfinalize`) with nothing but a fixed two-token command.
 
-    A `@file` may itself contain `@file` arguments; nesting is bounded to
-    catch cycles. A literal argument starting with `@` can be passed by
-    doubling it as `@@`.
+    Two conventions are deliberately *not* used here:
+
+    `fromfile_prefix_chars`, argparse's own support, opens the file with the
+    interpreter's locale encoding. On Windows that is the ANSI code page,
+    which cannot represent every path or password a caller might legitimately
+    pass. Reading the file as UTF-8 here keeps arguments intact on every
+    platform, matching how `--rel-src-manifest` is handled.
+
+    The customary `@file` spelling is unsafe for this tool's purpose. The
+    Cygwin/MSYS2 runtime, which backs Git for Windows' `bash`, expands
+    `@file` arguments itself before the callee ever runs, and it splits the
+    file on *whitespace* rather than on lines. Any argument containing a
+    space -- a signature description, a certificate subject, a path under
+    `Program Files` -- is silently torn into several arguments. Since the
+    whole point of an argument file here is to survive being handed through
+    an intermediary process, the flag must be one no intermediary claims.
+
+    An argument file may itself use `--args-file`; nesting is bounded to
+    catch cycles.
     """
 
     if _depth > 16:
@@ -154,14 +166,24 @@ def expand_argfiles(argv: Sequence[str], _depth: int = 0) -> list:
         )
 
     out = []
-    for arg in argv:
-        if arg.startswith("@@"):
-            out.append(arg[1:])
-            continue
-        if not arg.startswith("@") or len(arg) == 1:
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == ARGS_FILE_FLAG:
+            if i + 1 >= len(argv):
+                raise SystemExit(
+                    "sign_tool: {} needs a path".format(ARGS_FILE_FLAG)
+                )
+            path = argv[i + 1]
+            i += 2
+        elif arg.startswith(ARGS_FILE_FLAG + "="):
+            path = arg[len(ARGS_FILE_FLAG) + 1 :]
+            i += 1
+        else:
             out.append(arg)
+            i += 1
             continue
-        path = arg[1:]
+
         try:
             text = pathlib.Path(path).read_text(encoding="utf-8")
         except OSError as exc:
@@ -1175,6 +1197,14 @@ def sign_mode(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("sign", "resolve-cert"), default="sign")
+    # Expanded by expand_argfiles before argparse runs; declared here so it
+    # shows up in --help.
+    parser.add_argument(
+        ARGS_FILE_FLAG,
+        dest="args_file",
+        default="",
+        help="read additional arguments, one per line, from this UTF-8 file",
+    )
     parser.add_argument("--tool", choices=("auto", "osslsigncode", "codesign", "cosign"), default="auto")
     parser.add_argument("--in", dest="infile", default="")
     parser.add_argument("--out", default="")
