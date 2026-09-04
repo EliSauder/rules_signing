@@ -1,15 +1,37 @@
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+load("@rules_python//python:pip.bzl", "compile_pip_requirements")
+
 package(default_visibility = ["//visibility:public"])
+
+compile_pip_requirements(
+    name = "requirements",
+    src = "requirements.txt",
+    requirements_txt = "requirements_lock_txt",
+)
 
 py_library(
     name = "sign_tool_lib",
-    srcs = ["sign_tool.py"],
+    srcs = [
+        "//signing:__init__.py",
+        "//signing/private:__init__.py",
+        "__init__.py",
+        "sign_tool.py",
+    ],
     deps = ["@signing_pypi//lief"],
 )
 
 py_binary(
     name = "sign_tool",
-    srcs = ["sign_tool.py"],
+    srcs = [
+        "//signing:__init__.py",
+        "//signing/private:__init__.py",
+        "__init__.py",
+        "sign_tool.py",
+    ],
     main = "sign_tool.py",
     deps = [":sign_tool_lib"],
+    # LIEF is a native Python wheel, and signing_pypi is locked for this
+    # interpreter version. Keep this implementation detail separate from the
+    # Python version selected by a consuming ruleset.
+    python_version = "3.11",
 )

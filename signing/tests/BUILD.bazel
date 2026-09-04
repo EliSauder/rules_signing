@@ -469,7 +469,11 @@ codesign_tool(name = "codesign_tool")
 py_test(
     name = "sign_verify_test",
     size = "small",
-    srcs = ["sign_verify_test.py"],
+    srcs = [
+        "//signing:__init__.py",
+        "__init__.py",
+        "sign_verify_test.py",
+    ],
     args = [
         "--osslsigncode=$(rootpath @signing_osslsigncode//:osslsigncode_file)",
         "--cosign=$(rootpath @signing_cosign//:cosign_file)",
@@ -545,7 +549,11 @@ py_test(
 
 py_test(
     name = "sign_tool_unit_test",
-    srcs = ["sign_tool_unit_test.py"],
+    srcs = [
+        "//signing:__init__.py",
+        "__init__.py",
+        "sign_tool_unit_test.py",
+    ],
     size = "small",
     data = [
         ":hello_macho",
@@ -559,7 +567,11 @@ py_test(
 
 py_test(
     name = "sign_integration_test",
-    srcs = ["sign_integration_test.py"],
+    srcs = [
+        "//signing:__init__.py",
+        "__init__.py",
+        "sign_integration_test.py",
+    ],
     size = "small",
     data = [
         ":unsigned_files",
@@ -655,7 +667,11 @@ sign(
 py_test(
     name = "sign_name_preservation_test",
     size = "small",
-    srcs = ["sign_name_preservation_test.py"],
+    srcs = [
+        "//signing:__init__.py",
+        "__init__.py",
+        "sign_name_preservation_test.py",
+    ],
     args = [
         "--names-manifest=$(rootpath :awkward_names_manifest)",
         "--passthrough-tree=$(rootpath :signed_awkward_names_passthrough)",
