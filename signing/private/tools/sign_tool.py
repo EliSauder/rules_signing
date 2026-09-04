@@ -13,6 +13,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 import lief
@@ -95,6 +96,119 @@ def load_stamp_files(paths: Iterable[str]) -> Dict[str, str]:
             value = parts[1] if len(parts) > 1 else ""
             data[key] = value
     return data
+
+
+def unescape_param_file_line(line: str) -> str:
+    """Reverses Bazel's `multiline` parameter-file escaping.
+
+    Bazel writes each argument on its own line after replacing `\\` with
+    `\\\\` and a newline with `\\n`, so an argument may legally contain
+    either sequence and must be decoded rather than used verbatim.
+    """
+
+    out = []
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\" and i + 1 < len(line):
+            nxt = line[i + 1]
+            if nxt == "n":
+                out.append("\n")
+                i += 2
+                continue
+            if nxt == "\\":
+                out.append("\\")
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+ARGS_FILE_FLAG = "--args-file"
+
+
+def expand_argfiles(argv: Sequence[str], _depth: int = 0) -> list:
+    """Expands `--args-file` arguments into the arguments the file contains.
+
+    Argument files let a caller keep certificate paths, passwords and other
+    options out of a command line that would otherwise be visible to other
+    processes, embedded into a generated script, or subject to another tool's
+    quoting rules. That is what makes it possible to invoke this tool from
+    inside a third-party build step (for example NSIS' `!finalize` and
+    `!uninstfinalize`) with nothing but a fixed two-token command.
+
+    Two conventions are deliberately *not* used here:
+
+    `fromfile_prefix_chars`, argparse's own support, opens the file with the
+    interpreter's locale encoding. On Windows that is the ANSI code page,
+    which cannot represent every path or password a caller might legitimately
+    pass. Reading the file as UTF-8 here keeps arguments intact on every
+    platform, matching how `--rel-src-manifest` is handled.
+
+    The customary `@file` spelling is unsafe for this tool's purpose. The
+    Cygwin/MSYS2 runtime, which backs Git for Windows' `bash`, expands
+    `@file` arguments itself before the callee ever runs, and it splits the
+    file on *whitespace* rather than on lines. Any argument containing a
+    space -- a signature description, a certificate subject, a path under
+    `Program Files` -- is silently torn into several arguments. Since the
+    whole point of an argument file here is to survive being handed through
+    an intermediary process, the flag must be one no intermediary claims.
+
+    An argument file may itself use `--args-file`; nesting is bounded to
+    catch cycles.
+    """
+
+    if _depth > 16:
+        raise SystemExit(
+            "sign_tool: argument files are nested more than 16 levels deep, "
+            "which usually means one of them refers to itself"
+        )
+
+    out = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == ARGS_FILE_FLAG:
+            if i + 1 >= len(argv):
+                raise SystemExit(
+                    "sign_tool: {} needs a path".format(ARGS_FILE_FLAG)
+                )
+            path = argv[i + 1]
+            i += 2
+        elif arg.startswith(ARGS_FILE_FLAG + "="):
+            path = arg[len(ARGS_FILE_FLAG) + 1 :]
+            i += 1
+        else:
+            out.append(arg)
+            i += 1
+            continue
+
+        try:
+            text = pathlib.Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SystemExit(
+                "sign_tool: cannot read argument file {!r}: {}".format(path, exc)
+            )
+        lines = [unescape_param_file_line(l) for l in text.splitlines()]
+        out.extend(expand_argfiles([l for l in lines if l], _depth + 1))
+    return out
+
+
+def replace_path(src: str, dst: str) -> None:
+    """Moves `src` onto `dst`, replacing whatever is already there.
+
+    Used for in-place signing, where the signer cannot write to its own input
+    and the result therefore has to be produced beside it and moved over.
+    """
+
+    dst_path = pathlib.Path(dst)
+    if dst_path.is_dir() and not dst_path.is_symlink():
+        shutil.rmtree(dst_path)
+    elif dst_path.exists() or dst_path.is_symlink():
+        dst_path.unlink()
+    ensure_parent(dst)
+    shutil.move(src, dst)
 
 
 def load_rel_src_manifest(path: str) -> list:
@@ -987,9 +1101,110 @@ def resolve_cert_mode(args: argparse.Namespace) -> None:
     pathlib.Path(args.out).write_bytes(data or b"")
 
 
+def sign_mode(args: argparse.Namespace) -> None:
+    """Handles `--mode sign`.
+
+    Two input styles are supported:
+
+    * `--rel-src-manifest` with `--out-dir` signs many files at once,
+      reproducing each source's relative path under the output directory.
+    * `--in`, optionally with `--out`, signs a single file or directory. When
+      `--out` is omitted or names the input, the input is signed in place,
+      which is what build steps that hand a signer a path to an artifact they
+      have already produced (rather than an input/output pair) require.
+    """
+
+    if not args.infile and not args.rel_src_manifest:
+        raise SystemExit(
+            "sign_tool: --mode sign needs either --in (single target) or "
+            "--rel-src-manifest with --out-dir (batch)"
+        )
+    if args.infile and args.rel_src_manifest:
+        raise SystemExit(
+            "sign_tool: --in and --rel-src-manifest are alternative ways to "
+            "name what to sign; pass exactly one"
+        )
+    if args.rel_src_manifest and not args.out_dir:
+        raise SystemExit("sign_tool: --rel-src-manifest requires --out-dir")
+
+    stamps = load_stamp_files([args.info_file, args.version_file])
+    defaults = parse_defaults(args.stamp_default)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cert_path = resolve_cert_path(cert_file=args.cert_file)
+        password = resolve_password(
+            password_template=args.password_template,
+            password_env=args.password_env,
+            stamps=stamps,
+            defaults=defaults,
+        )
+        identity = resolve_identity(
+            identity_template=args.identity_template,
+            stamps=stamps,
+            defaults=defaults,
+        )
+
+        if args.infile:
+            if not pathlib.Path(args.infile).exists():
+                raise SystemExit(
+                    "sign_tool: --in {!r} does not exist".format(args.infile)
+                )
+            outfile = args.out or args.infile
+            in_place = os.path.realpath(outfile) == os.path.realpath(args.infile)
+
+            # No signer supports reading and writing the same path, so an
+            # in-place request is served by signing to scratch space and
+            # moving the result over the original afterwards.
+            target = outfile
+            if in_place:
+                staging = pathlib.Path(tmpdir) / "in-place"
+                staging.mkdir(parents=True, exist_ok=True)
+                target = str(staging / pathlib.Path(args.infile).name)
+
+            sign_one(
+                tool_mode=args.tool,
+                relpath=args.infile,
+                infile=args.infile,
+                outfile=target,
+                args=args,
+                tmpdir=tmpdir,
+                cert_path=cert_path,
+                password=password,
+                identity=identity,
+            )
+
+            if in_place:
+                replace_path(target, outfile)
+            return
+
+        rel_src_pairs = load_rel_src_manifest(args.rel_src_manifest)
+        pathlib.Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+        for relpath, src in rel_src_pairs:
+            out = str(pathlib.Path(args.out_dir) / relpath)
+            sign_one(
+                tool_mode=args.tool,
+                relpath=relpath,
+                infile=src,
+                outfile=out,
+                args=args,
+                tmpdir=tmpdir,
+                cert_path=cert_path,
+                password=password,
+                identity=identity,
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("sign", "resolve-cert"), default="sign")
+    # Expanded by expand_argfiles before argparse runs; declared here so it
+    # shows up in --help.
+    parser.add_argument(
+        ARGS_FILE_FLAG,
+        dest="args_file",
+        default="",
+        help="read additional arguments, one per line, from this UTF-8 file",
+    )
     parser.add_argument("--tool", choices=("auto", "osslsigncode", "codesign", "cosign"), default="auto")
     parser.add_argument("--in", dest="infile", default="")
     parser.add_argument("--out", default="")
@@ -1034,46 +1249,14 @@ def main() -> None:
     parser.add_argument("--stamp-default", action="append", default=[])
     parser.add_argument("--info-file", default="")
     parser.add_argument("--version-file", default="")
-    args = parser.parse_args()
+    args = parser.parse_args(expand_argfiles(sys.argv[1:]))
 
     if args.mode == "resolve-cert":
         resolve_cert_mode(args)
         return
 
-    rel_src_pairs = load_rel_src_manifest(args.rel_src_manifest)
+    sign_mode(args)
 
-    stamps = load_stamp_files([args.info_file, args.version_file])
-    defaults = parse_defaults(args.stamp_default)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cert_path = resolve_cert_path(cert_file=args.cert_file)
-        password = resolve_password(
-            password_template=args.password_template,
-            password_env=args.password_env,
-            stamps=stamps,
-            defaults=defaults,
-        )
-        identity = resolve_identity(
-            identity_template=args.identity_template,
-            stamps=stamps,
-            defaults=defaults,
-        )
-
-        pathlib.Path(args.out_dir).mkdir(parents=True, exist_ok=True)
-        for relpath, src in rel_src_pairs:
-            out = str(pathlib.Path(args.out_dir) / relpath)
-            sign_one(
-                tool_mode=args.tool,
-                relpath=relpath,
-                infile=src,
-                outfile=out,
-                args=args,
-                tmpdir=tmpdir,
-                cert_path=cert_path,
-                password=password,
-                identity=identity,
-            )
-        return
 
 if __name__ == "__main__":
     main()

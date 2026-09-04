@@ -5,6 +5,15 @@ directly: macOS bundle inputs that can be produced on any host, and the
 `rcodesign` binary as an ordinary dependency so a test can shell out to it.
 """
 
+load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS")
+load(
+    "//signing:actions.bzl",
+    "SIGNING_ATTRS",
+    "SIGNING_TOOLCHAINS",
+    "signing_argv",
+    "signing_context",
+)
+
 _CODESIGN_TOOLCHAIN = "@codesign.bzl//toolchain:toolchain_type"
 
 def _app_bundle_impl(ctx):
@@ -80,4 +89,65 @@ no such filegroup and is selected per execution platform, so reaching the
 binary requires toolchain resolution inside a rule.
 """,
     toolchains = [config_common.toolchain_type(_CODESIGN_TOOLCHAIN, mandatory = False)],
+)
+
+# ---------------------------------------------------------------------------
+# Embedded signing fixture
+#
+# Proves the `//signing:actions.bzl` API works for rules that cannot use a
+# separate `sign` action at all. NSIS is the motivating case: its uninstaller
+# only exists during the `makensis` run, and is signed through the
+# `!uninstfinalize` hook, which hands a signer a path and expects the file at
+# that path to come back signed. So the signer has to run *inside* another
+# tool's action, as a grandchild process, against an artifact that does not
+# exist at analysis time.
+#
+# This fixture reproduces exactly that shape: an action owned by an unrelated
+# executable produces a PE binary and then invokes the command built by
+# `signing_argv` on it in place. sign_verify_test checks the result with
+# osslsigncode's own verifier, so a signature produced this way is held to the
+# same standard as one from the `sign` rule.
+# ---------------------------------------------------------------------------
+
+def _embedded_sign_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".exe")
+
+    # No `srcs`: what gets signed is produced by this action, so the required
+    # toolchain has to be stated outright rather than inferred.
+    sctx = signing_context(
+        ctx,
+        require = ["osslsigncode"],
+        require_reason = "this rule always emits a PE executable",
+    )
+
+    argv = signing_argv(sctx, infile = out)
+
+    ctx.actions.run_shell(
+        command = """
+set -eu
+cp "$1" "$2"
+chmod +w "$2"
+shift 2
+exec "$@"
+""",
+        arguments = [ctx.file.binary.path, out.path] + argv,
+        inputs = depset([ctx.file.binary], transitive = [sctx.inputs]),
+        tools = sctx.tools,
+        outputs = [out],
+        env = sctx.env,
+        mnemonic = "EmbeddedSign",
+        progress_message = "Building and signing {} in one action".format(ctx.label),
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+embedded_sign = rule(
+    implementation = _embedded_sign_impl,
+    doc = "Test fixture: produces a PE and signs it in place from within the " +
+          "same action, the way a packaging tool's finalize hook would.",
+    attrs = dict({
+        "binary": attr.label(allow_single_file = True, mandatory = True),
+        # SIGNING_ATTRS deliberately excludes the stamp attributes, so the
+        # rule declares them itself -- exactly as a consumer would.
+    }, **dict(SIGNING_ATTRS, **STAMP_ATTRS)),
+    toolchains = SIGNING_TOOLCHAINS,
 )

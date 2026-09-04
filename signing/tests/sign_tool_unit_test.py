@@ -1296,5 +1296,191 @@ class SignToolUnitTest(unittest.TestCase):
             self.assertIn("openssl toolchain", message)
 
 
+    # ------------------------------------------------------------------
+    # Argument files and single-target signing.
+    #
+    # These exist so a rule can hand the signer to a third-party build step
+    # (NSIS' !finalize / !uninstfinalize being the motivating case) as a fixed
+    # command that names no credentials and takes the artifact path from the
+    # tool itself.
+    # ------------------------------------------------------------------
+
+    def test_argfile_round_trips_bazel_multiline_escaping(self) -> None:
+        # Bazel writes a "multiline" params file by escaping backslashes and
+        # newlines, so reading the lines verbatim would corrupt Windows paths
+        # and any multi-line argument.
+        with tempfile.TemporaryDirectory() as tmp:
+            params = pathlib.Path(tmp) / "p.sign_params"
+            params.write_text(
+                "--tool\n"
+                "osslsigncode\n"
+                "--name\n"
+                "line1\\nline2\n"
+                "--url\n"
+                "C:\\\\certs\\\\key.p12\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                sign_tool.expand_argfiles(
+                    ["--args-file=" + str(params), "--in", "%1"]
+                ),
+                [
+                    "--tool",
+                    "osslsigncode",
+                    "--name",
+                    "line1\nline2",
+                    "--url",
+                    "C:\\certs\\key.p12",
+                    "--in",
+                    "%1",
+                ],
+            )
+
+    def test_argfile_is_read_as_utf8_regardless_of_platform_encoding(self) -> None:
+        # The whole point of the params file is that arguments bypass the OS
+        # command-line encoding, so non-ASCII must survive.
+        with tempfile.TemporaryDirectory() as tmp:
+            params = pathlib.Path(tmp) / "p"
+            params.write_text("--name\ncafé-中文\n", encoding="utf-8")
+            self.assertEqual(
+                sign_tool.expand_argfiles(["--args-file", str(params)]),
+                ["--name", "café-中文"],
+            )
+
+    def test_argfile_flag_is_not_the_at_prefix_convention(self) -> None:
+        # Git for Windows' bash is backed by the Cygwin/MSYS2 runtime, which
+        # expands `@file` arguments itself and splits the file on whitespace
+        # rather than on lines. A signer invoked through any such intermediary
+        # would receive a description like "rules_signing development
+        # signature" as three separate arguments, so `@` must stay an ordinary
+        # argument here and the real flag must be one nothing else claims.
+        with tempfile.TemporaryDirectory() as tmp:
+            params = pathlib.Path(tmp) / "p"
+            params.write_text("--name\nrules signing sig\n", encoding="utf-8")
+
+            self.assertEqual(
+                sign_tool.expand_argfiles(["@" + str(params)]),
+                ["@" + str(params)],
+            )
+            for spelling in (
+                ["--args-file=" + str(params)],
+                ["--args-file", str(params)],
+            ):
+                self.assertEqual(
+                    sign_tool.expand_argfiles(spelling),
+                    ["--name", "rules signing sig"],
+                )
+
+    def test_argfile_error_paths(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.expand_argfiles(["--args-file"])
+        self.assertIn("needs a path", str(ctx.exception))
+
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.expand_argfiles(["--args-file=/nonexistent/params/file"])
+        self.assertIn("cannot read argument file", str(ctx.exception))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            loop = pathlib.Path(tmp) / "loop"
+            loop.write_text("--args-file=" + str(loop) + "\n", encoding="utf-8")
+            with self.assertRaises(SystemExit) as ctx:
+                sign_tool.expand_argfiles(["--args-file=" + str(loop)])
+            self.assertIn("nested more than", str(ctx.exception))
+
+    def test_single_file_mode_signs_in_place_by_default(self) -> None:
+        # !uninstfinalize hands over a path and expects the file at that same
+        # path to come back signed, so no signer may be given input == output.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "Uninstall.exe"
+            target.write_bytes(b"MZ-original")
+
+            recorded = {}
+
+            def fake_osslsigncode(**kwargs):
+                recorded.update(kwargs)
+                self.assertNotEqual(kwargs["infile"], kwargs["outfile"])
+                pathlib.Path(kwargs["outfile"]).parent.mkdir(parents=True, exist_ok=True)
+                pathlib.Path(kwargs["outfile"]).write_bytes(b"MZ-signed")
+
+            with mock.patch.object(sign_tool, "sign_with_osslsigncode", fake_osslsigncode):
+                args = self._args()
+                args.mode = "sign"
+                args.infile = str(target)
+                args.out = ""
+                args.out_dir = ""
+                args.rel_src_manifest = ""
+                args.cert_file = "/fake/cert.p12"
+                args.password_template = ""
+                args.password_env = ""
+                args.identity_template = ""
+                args.stamp_default = []
+                args.info_file = ""
+                args.version_file = ""
+                sign_tool.sign_mode(args)
+
+            self.assertEqual(target.read_bytes(), b"MZ-signed")
+            self.assertEqual(recorded["infile"], str(target))
+
+    def test_single_file_mode_writes_a_separate_output_when_asked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = root / "in.txt"
+            target.write_bytes(b"payload")
+            out = root / "nested" / "out.txt"
+
+            args = self._args()
+            args.mode = "sign"
+            args.infile = str(target)
+            args.out = str(out)
+            args.out_dir = ""
+            args.rel_src_manifest = ""
+            args.cert_file = ""
+            args.password_template = ""
+            args.password_env = ""
+            args.identity_template = ""
+            args.stamp_default = []
+            args.info_file = ""
+            args.version_file = ""
+            sign_tool.sign_mode(args)
+
+            self.assertEqual(out.read_bytes(), b"payload")
+            self.assertEqual(target.read_bytes(), b"payload")
+
+    def test_single_file_mode_rejects_ambiguous_or_missing_targets(self) -> None:
+        args = self._args()
+        args.mode = "sign"
+        args.infile = ""
+        args.out = ""
+        args.out_dir = ""
+        args.rel_src_manifest = ""
+        args.cert_file = ""
+        args.password_template = ""
+        args.password_env = ""
+        args.identity_template = ""
+        args.stamp_default = []
+        args.info_file = ""
+        args.version_file = ""
+
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.sign_mode(args)
+        self.assertIn("either --in", str(ctx.exception))
+
+        args.infile = "/definitely/missing/file"
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.sign_mode(args)
+        self.assertIn("does not exist", str(ctx.exception))
+
+        args.infile = "/some/file"
+        args.rel_src_manifest = "/some/manifest"
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.sign_mode(args)
+        self.assertIn("exactly one", str(ctx.exception))
+
+        args.infile = ""
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.sign_mode(args)
+        self.assertIn("requires --out-dir", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

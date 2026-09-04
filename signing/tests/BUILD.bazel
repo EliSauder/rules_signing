@@ -1,7 +1,7 @@
 load("//signing:defs.bzl", "sign", "certificate")
 load("//signing/tests:tree.bzl", "make_tree")
 load("//signing/tests:cross.bzl", "platform_binary")
-load("//signing/tests:fixtures.bzl", "app_bundle", "codesign_tool")
+load("//signing/tests:fixtures.bzl", "app_bundle", "codesign_tool", "embedded_sign")
 load("//signing/tests:manifest.bzl", "file_name_manifest")
 load(
     "//signing/tests/testdata_certs:certs.bzl",
@@ -261,6 +261,19 @@ sign(
     url = SIGNED_URL,
 )
 
+# Signed from inside another tool's action against an artifact that does not
+# exist at analysis time, which is the only shape available to packagers whose
+# finalize hooks sign as a side effect of building. Verified exactly like the
+# `sign`-produced PEs above.
+embedded_sign(
+    name = "signed_real_pe_embedded",
+    binary = ":hello_pe",
+    signing_certificate = ":dev_cert_generic_pem",
+    signing_description = SIGNED_DESCRIPTION,
+    signing_tool = "osslsigncode",
+    signing_url = SIGNED_URL,
+)
+
 sign(
     name = "signed_real_pe_p12",
     src = ":hello_exe",
@@ -335,12 +348,30 @@ _STAMP_TEST_DEFAULTS = {
     for stamp_value in [-1, 0, 1]
 ]
 
+# The same three stamp settings driven through `signing_attrs`' prefixed
+# attributes, where STAMP_ATTRS is declared by the consuming rule rather than
+# contributed by SIGNING_ATTRS. Proves the stamp attribute is still found and
+# honoured after being decoupled.
+[
+    embedded_sign(
+        name = "embedded_pe_base64_stamp_{}".format(stamp_value),
+        binary = ":hello_pe",
+        signing_certificate = ":dev_cert_generic_base64_stamp_{}".format(stamp_value),
+        signing_tool = "osslsigncode",
+        stamp = stamp_value,
+    )
+    for stamp_value in [-1, 0, 1]
+]
+
 build_test(
     name = "stamp_attr_test",
     targets = [
         ":signed_real_pe_base64_stamp_-1",
         ":signed_real_pe_base64_stamp_0",
         ":signed_real_pe_base64_stamp_1",
+        ":embedded_pe_base64_stamp_-1",
+        ":embedded_pe_base64_stamp_0",
+        ":embedded_pe_base64_stamp_1",
     ],
 )
 
@@ -457,6 +488,7 @@ py_test(
         "--pe=$(rootpath :signed_real_pe_p12)/signing/tests/hello.exe",
         "--pe=$(rootpath :signed_real_pe_base64)/signing/tests/hello.exe",
         "--pe=$(rootpath :signed_real_pe_detected)/signing/tests/hello_pe",
+        "--pe=$(rootpath :signed_real_pe_embedded)",
         "--macho=$(rootpath :signed_real_macho_pem)/signing/tests/hello_macho",
         "--macho=$(rootpath :signed_real_macho_p12)/signing/tests/hello_macho",
         "--app-bundle=$(rootpath :signed_real_app_bundle)",
@@ -488,6 +520,7 @@ py_test(
         ":signed_real_macho_pem",
         ":signed_real_pe_base64",
         ":signed_real_pe_detected",
+        ":signed_real_pe_embedded",
         ":signed_real_pe_p12",
         ":signed_real_pe_pem",
         ":signed_shared_blobs",

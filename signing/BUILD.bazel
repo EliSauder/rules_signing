@@ -3,6 +3,7 @@ load("@bazel_lib//:bzl_library.bzl", "bzl_library")
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
+    "actions.bzl",
     "defs.bzl",
     "extensions.bzl",
     "providers.bzl",
@@ -29,6 +30,12 @@ bzl_library(
     name = "defs_bzl",
     srcs = ["defs.bzl"],
     deps = ["//signing/private:defs_bzl"],
+)
+
+bzl_library(
+    name = "actions_bzl",
+    srcs = ["actions.bzl"],
+    deps = ["//signing/private:action_bzl"],
 )
 
 bzl_library(
