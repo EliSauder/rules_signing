@@ -1398,12 +1398,13 @@ def sign_mode(args: argparse.Namespace) -> None:
         )
 
         if args.infile:
-            if not pathlib.Path(args.infile).exists():
+            infile = os.path.normpath(args.infile)
+            if not pathlib.Path(infile).exists():
                 raise SystemExit(
-                    "sign_tool: --in {!r} does not exist".format(args.infile)
+                    "sign_tool: --in {!r} does not exist".format(infile)
                 )
-            outfile = args.out or args.infile
-            in_place = os.path.realpath(outfile) == os.path.realpath(args.infile)
+            outfile = args.out or infile
+            in_place = os.path.realpath(outfile) == os.path.realpath(infile)
 
             # No signer supports reading and writing the same path, so an
             # in-place request is served by signing to scratch space and
@@ -1412,12 +1413,12 @@ def sign_mode(args: argparse.Namespace) -> None:
             if in_place:
                 staging = pathlib.Path(tmpdir) / "in-place"
                 staging.mkdir(parents=True, exist_ok=True)
-                target = str(staging / pathlib.Path(args.infile).name)
+                target = str(staging / pathlib.Path(infile).name)
 
             sign_one(
                 tool_mode=args.tool,
-                relpath=args.infile,
-                infile=args.infile,
+                relpath=infile,
+                infile=infile,
                 outfile=target,
                 args=args,
                 tmpdir=tmpdir,
