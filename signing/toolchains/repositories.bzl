@@ -80,6 +80,13 @@ def _emit_toolchain_build(name, src, host, rule_name, toolchain_type, data = [])
     attribute (currently just openssl_toolchain, for Windows' sibling DLLs);
     it's omitted from the generated target entirely when empty so it never
     trips over rules that don't define that attribute.
+
+    Two filegroups are emitted rather than one. `{n}_file` is the executable
+    on its own, so `$(rootpath)` on it yields exactly one path. `{n}_files`
+    adds whatever the tool needs beside it at runtime, which is what a
+    `data` dependency must use: staging only the executable leaves those
+    files unresolved (on Windows that surfaces as STATUS_DLL_NOT_FOUND,
+    exit code 3221225781, naming no DLL at all).
     """
     constraints = _exec_constraints(host)
     data_attr = ""
@@ -93,6 +100,11 @@ def _emit_toolchain_build(name, src, host, rule_name, toolchain_type, data = [])
         'package(default_visibility = ["//visibility:public"])',
         "",
         'filegroup(name = "{n}_file", srcs = ["{s}"])'.format(n = name, s = src),
+        "",
+        'filegroup(name = "{n}_files", srcs = [":{n}_file"{d}])'.format(
+            n = name,
+            d = "".join([', "{}"'.format(d) for d in data]),
+        ),
         "",
         "{r}(".format(r = rule_name),
         '    name = "{n}_toolchain_impl",'.format(n = name),

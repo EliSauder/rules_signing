@@ -577,6 +577,11 @@ py_test(
         ":signed_self_signed_pe_p12",
         "@signing_cosign//:cosign_file",
         "@signing_openssl//:openssl_file",
+
+        # openssl.exe on Windows loads libcrypto/libssl from its own
+        # directory, so the executable alone is not runnable; this stages
+        # whatever has to sit beside it.
+        "@signing_openssl//:openssl_files",
         "@signing_osslsigncode//:osslsigncode_file",
     ],
     deps = ["@rules_python//python/runfiles"],
