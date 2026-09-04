@@ -1,3 +1,5 @@
+load("@bazel_lib//:bzl_library.bzl", "bzl_library")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
@@ -5,3 +7,32 @@ exports_files([
     "extensions.bzl",
     "providers.bzl",
 ])
+
+# ---------------------------------------------------------------------------
+# API documentation
+#
+# `bzl_library` from `@bazel_lib` generates a `starlark_doc_extract` target for
+# every entry in `srcs` (skipping `private` packages).
+# `.github/workflows/release_prep.sh` collects every `starlark_doc_extract`
+# rule in the repository and ships the generated docs alongside the release
+# archive, which is what `docs_url` in `.bcr/source.template.json` points at.
+# Every file a consumer is expected to `load()` therefore needs a `bzl_library`
+# target here, or the published documentation silently omits it.
+# ---------------------------------------------------------------------------
+
+bzl_library(
+    name = "providers_bzl",
+    srcs = ["providers.bzl"],
+)
+
+bzl_library(
+    name = "defs_bzl",
+    srcs = ["defs.bzl"],
+    deps = ["//signing/private:defs_bzl"],
+)
+
+bzl_library(
+    name = "extensions_bzl",
+    srcs = ["extensions.bzl"],
+    deps = ["//signing/private:extensions_bzl"],
+)

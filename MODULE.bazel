@@ -3,13 +3,23 @@ module(
     version = "0.0.1",
 )
 
-bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "rules_python", version = "2.3.2")
-bazel_dep(name = "rules_cc", version = "0.2.22")
 bazel_dep(name = "platforms", version = "1.1.0")
-bazel_dep(name = "rules_oci", version = "2.3.0")
 bazel_dep(name = "codesign.bzl", version = "0.0.13")
 bazel_dep(name = "package_metadata", version = "0.0.13")
+
+# Used only by this module's own tests: `rules_cc` cross-compiles the Mach-O/PE
+# fixtures and `rules_oci` builds the `oci_image` under test. Neither is
+# reachable from anything a consumer loads, so both are dev-only and stay out
+# of downstream build graphs (`rules_oci` in particular would otherwise pull
+# aspect_bazel_lib, tar.bzl, jq.bzl, yq.bzl and gawk along with it). The
+# `usagetest/` consumer module declares its own `rules_oci` for the same reason.
+bazel_dep(name = "rules_cc", version = "0.2.22", dev_dependency = True)
+bazel_dep(name = "rules_oci", version = "2.3.0", dev_dependency = True)
+
+# `build_test` / `copy_file` in `//signing/tests`. Nothing a consumer loads
+# refers to bazel_skylib, so it is dev-only.
+bazel_dep(name = "bazel_skylib", version = "1.9.2", dev_dependency = True)
 
 # Provides the standard `stamp` attribute / `--stamp` handling (STAMP_ATTRS,
 # maybe_stamp) used by rules that embed workspace status into their outputs,
