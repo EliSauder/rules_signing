@@ -99,6 +99,63 @@ The `sign` target emits a **directory artifact** containing the signed/copied fi
 
 For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs.
 
+### Stamping
+
+`{KEY}` placeholders in `certificate`/`password`/`identity` are resolved
+against Bazel's workspace status (`--stamp` and `--workspace_status_command`),
+using the same convention as the rest of the Bazel ecosystem: both
+`certificate` and `sign` accept the standard `stamp` attribute from
+[`@bazel_lib//lib:stamping.bzl`](https://github.com/bazel-contrib/bazel-lib/blob/main/lib/stamping.bzl)
+(`STAMP_ATTRS`, `maybe_stamp`), each evaluating its own independently:
+
+- `stamp = -1` (the default) follows the build-wide `--stamp`/`--nostamp` flag.
+- `stamp = 1` always stamps this target, even with `--nostamp`.
+- `stamp = 0` never stamps this target, even with `--stamp`.
+
+`certificate` resolves its own `certificate` template (if any) into a real,
+already-decoded certificate file exactly once, using its own `stamp`
+attribute — not the consuming `sign` target's. This matters because one
+`certificate` can back several `sign` targets: stamping is decided where the
+secret is materialized, so every consumer sees the same resolved bytes
+instead of each `sign` action re-interpolating (and separately deciding
+whether to stamp) the same template. `password`/`identity` remain plain
+string templates, resolved by the consuming `sign` target's own `stamp`
+setting when the signing action runs, since turning a password into a cached
+build output would be a worse practice than passing it as an argument.
+
+A `path`-encoded `certificate` template that renders to a location which does
+not exist on disk (e.g. a secret not present in this build environment) is
+tolerated rather than treated as a hard error — the affected `sign` targets
+just proceed as if no certificate had been configured. An unresolved `{KEY}`
+placeholder (no `stamp_defaults` entry and stamping disabled or missing the
+key) is always a hard build error, since that usually means a workspace
+status key was never wired up.
+
+Stamping is only consulted when a template actually contains a `{KEY}`
+placeholder, and real values are only read from the workspace status files
+when stamping is enabled for the build/target; otherwise unresolved keys fall
+back to `stamp_defaults`. This keeps a plain `bazel build` reproducible and
+free of the volatile-status dependency unless you explicitly opt in:
+
+```starlark
+certificate(
+    name = "release_cert",
+    certificate = "{STABLE_CERT_PATH}",
+    certificate_encoding = "path",
+    stamp = 1,  # or rely on --stamp / --nostamp
+    stamp_defaults = {
+        "STABLE_CERT_PATH": "/tmp/dev-cert.p12",
+    },
+)
+
+sign(
+    name = "signed_bundle",
+    src = ":artifact_bundle",
+    certificate = ":release_cert",
+    stamp = 1,  # or rely on --stamp / --nostamp
+)
+```
+
 ### Transparency log
 
 `cosign sign-blob` publishes the artifact digest to the public Rekor

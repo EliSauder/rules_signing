@@ -289,6 +289,61 @@ sign(
     url = SIGNED_URL,
 )
 
+# Exercises the `stamp` attribute on both `certificate` and `sign` at each of
+# its three values, using a base64-templated certificate whose real value
+# comes from `tools/workspace_status.py` (see .bazelrc's
+# --workspace_status_command), so successful signing proves genuine
+# workspace status was read, not merely `stamp_defaults` fallback:
+#
+#   -1 (follow --stamp/--nostamp): a plain `bazel test` invocation builds
+#       with --nostamp, so this behaves like `stamp = 0` here and falls back
+#       to `stamp_defaults`, which is the real, valid certificate.
+#    0 (never stamp): always falls back to `stamp_defaults`, again the real,
+#       valid certificate, proving the target never touches workspace status.
+#    1 (always stamp): no `stamp_defaults` are defined at all, so this build
+#       only succeeds if the real `STABLE_RULES_SIGNING_TEST_CERT_B64` value
+#       from the workspace status script was actually substituted in --
+#       there is no fallback value it could have used instead.
+_STAMP_TEST_DEFAULTS = {
+    -1: {"STABLE_RULES_SIGNING_TEST_CERT_B64": DEV_GENERIC_P12_BASE64},
+    0: {"STABLE_RULES_SIGNING_TEST_CERT_B64": DEV_GENERIC_P12_BASE64},
+    1: {},
+}
+
+[
+    certificate(
+        name = "dev_cert_generic_base64_stamp_{}".format(stamp_value),
+        certificate = "{STABLE_RULES_SIGNING_TEST_CERT_B64}",
+        certificate_encoding = "base64",
+        password = DEV_CERT_PASSWORD,
+        stamp = stamp_value,
+        stamp_defaults = _STAMP_TEST_DEFAULTS[stamp_value],
+    )
+    for stamp_value in [-1, 0, 1]
+]
+
+[
+    sign(
+        name = "signed_real_pe_base64_stamp_{}".format(stamp_value),
+        src = ":hello_exe",
+        certificate = ":dev_cert_generic_base64_stamp_{}".format(stamp_value),
+        description = SIGNED_DESCRIPTION,
+        stamp = stamp_value,
+        tool = "osslsigncode",
+        url = SIGNED_URL,
+    )
+    for stamp_value in [-1, 0, 1]
+]
+
+build_test(
+    name = "stamp_attr_test",
+    targets = [
+        ":signed_real_pe_base64_stamp_-1",
+        ":signed_real_pe_base64_stamp_0",
+        ":signed_real_pe_base64_stamp_1",
+    ],
+)
+
 # Timestamping is disabled throughout: rcodesign otherwise contacts
 # timestamp.apple.com, which would make every build depend on the network.
 sign(

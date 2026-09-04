@@ -225,39 +225,62 @@ class SignToolUnitTest(unittest.TestCase):
             cert_file = tmp_path / "cert.p12"
             cert_file.write_text("cert", encoding="utf-8")
 
-            # Direct file.
-            resolved = sign_tool.resolve_cert_path(
-                cert_file=str(cert_file),
-                cert_template="",
-                cert_encoding="path",
-                stamps={},
-                defaults={},
-                tmpdir=tmp,
-            )
+            # Direct file: `resolve_cert_path` only ever sees an already
+            # resolved file (the `certificate` rule handles templates via
+            # `render_cert_material` before `sign` ever runs).
+            resolved = sign_tool.resolve_cert_path(cert_file=str(cert_file))
             self.assertEqual(resolved, str(cert_file))
 
-            # Template path.
-            resolved = sign_tool.resolve_cert_path(
-                cert_file="",
+            # An empty file is the sentinel written when a template could not
+            # be resolved to real material; treated the same as no cert.
+            empty_file = tmp_path / "empty.bin"
+            empty_file.write_bytes(b"")
+            self.assertIsNone(sign_tool.resolve_cert_path(cert_file=str(empty_file)))
+            self.assertIsNone(sign_tool.resolve_cert_path(cert_file=""))
+
+            # Template path, resolved by `render_cert_material` (what the
+            # `certificate` rule's `resolve-cert` action runs).
+            data, unresolved = sign_tool.render_cert_material(
                 cert_template="{CERT_PATH}",
                 cert_encoding="path",
                 stamps={},
                 defaults={"CERT_PATH": str(cert_file)},
-                tmpdir=tmp,
             )
-            self.assertEqual(resolved, str(cert_file))
+            self.assertFalse(unresolved)
+            self.assertEqual(data, b"cert")
+
+            # Template path that does not exist on disk: tolerated (not an
+            # error), rendered as `None` so the resolver writes the empty
+            # sentinel file instead of failing the build.
+            data, unresolved = sign_tool.render_cert_material(
+                cert_template="{CERT_PATH}",
+                cert_encoding="path",
+                stamps={},
+                defaults={"CERT_PATH": str(tmp_path / "missing.p12")},
+            )
+            self.assertFalse(unresolved)
+            self.assertIsNone(data)
 
             # Template base64.
-            resolved = sign_tool.resolve_cert_path(
-                cert_file="",
+            data, unresolved = sign_tool.render_cert_material(
                 cert_template="{CERT_B64}",
                 cert_encoding="base64",
                 stamps={},
                 defaults={"CERT_B64": "Y2VydC1iYXNlNjQ="},
-                tmpdir=tmp,
             )
-            self.assertIsNotNone(resolved)
-            self.assertEqual(pathlib.Path(resolved).read_text(encoding="utf-8"), "cert-base64")
+            self.assertFalse(unresolved)
+            self.assertEqual(data, b"cert-base64")
+
+            # Unresolved placeholder: always a hard error, regardless of
+            # encoding.
+            data, unresolved = sign_tool.render_cert_material(
+                cert_template="{MISSING_KEY}",
+                cert_encoding="base64",
+                stamps={},
+                defaults={},
+            )
+            self.assertTrue(unresolved)
+            self.assertIsNone(data)
 
     def test_password_and_identity_resolution_permutations(self) -> None:
         with mock.patch.dict("os.environ", {"CERT_PASSWORD_ENV": "from-env"}, clear=False):
@@ -739,14 +762,15 @@ class SignToolUnitTest(unittest.TestCase):
             infile.write_text("EXE\n", encoding="utf-8")
 
             der = b"\x30\x82\x0a\x1d\x02\x01\x03"
-            cert_path = sign_tool.resolve_cert_path(
-                cert_file="",
+            data, unresolved = sign_tool.render_cert_material(
                 cert_template=base64.b64encode(der).decode("ascii"),
                 cert_encoding="base64",
                 stamps={},
                 defaults={},
-                tmpdir=str(root),
             )
+            self.assertFalse(unresolved)
+            cert_path = str(root / "cert.bin")
+            pathlib.Path(cert_path).write_bytes(data)
             self.assertEqual(pathlib.Path(cert_path).read_bytes(), der)
 
             recorded: list[list[str]] = []

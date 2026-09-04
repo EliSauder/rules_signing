@@ -15,14 +15,36 @@ def cert_info(ctx):
     return ctx.attr.certificate[SigningCertificateInfo]
 
 def cert_needs_stamp(info):
+    """Whether `sign`'s own action still needs workspace status files.
+
+    The `certificate` rule now resolves the `certificate` template itself
+    (see `certificate.bzl`), so only the remaining string templates --
+    `password`/`identity`, which stay strings rather than becoming files --
+    can still need stamp values here.
+    """
     if info == None:
         return False
-    for v in [info.cert, info.password, info.identity]:
+    for v in [info.password, info.identity]:
         if v and "{" in v:
             return True
     return False
 
-def add_cert_args(ctx, args, info):
+def add_cert_args(args, info, stamp):
+    """Adds certificate-related args/inputs to `args`.
+
+    Args:
+        args: an Args object to append to.
+        info: a SigningCertificateInfo, or None.
+        stamp: the result of `@bazel_lib//lib:stamping.bzl`'s `maybe_stamp(ctx)`
+            (a struct with `stable_status_file`/`volatile_status_file`), or
+            None if stamping is disabled for this target/build. Only consulted
+            when `password`/`identity` actually need stamp values; the
+            `certificate` template (if any) was already resolved by the
+            `certificate` rule using its own `stamp` attribute.
+
+    Returns:
+        A list of extra Files that must be added to the action's inputs.
+    """
     extra = []
 
     if info == None:
@@ -34,9 +56,6 @@ def add_cert_args(ctx, args, info):
     if getattr(info, "ca_file", None) != None:
         args.add("--ca-file", info.ca_file)
         extra.append(info.ca_file)
-    if info.cert:
-        args.add("--cert-template", info.cert)
-    args.add("--cert-encoding", info.cert_encoding or "path")
     if info.password:
         args.add("--password-template", info.password)
     if info.password_env:
@@ -47,10 +66,10 @@ def add_cert_args(ctx, args, info):
     for k, v in info.stamp_defaults.items():
         args.add("--stamp-default", "{}={}".format(k, v))
 
-    if cert_needs_stamp(info):
-        args.add("--info-file", ctx.info_file)
-        args.add("--version-file", ctx.version_file)
-        extra.append(ctx.info_file)
-        extra.append(ctx.version_file)
+    if cert_needs_stamp(info) and stamp:
+        args.add("--info-file", stamp.stable_status_file)
+        args.add("--version-file", stamp.volatile_status_file)
+        extra.append(stamp.stable_status_file)
+        extra.append(stamp.volatile_status_file)
 
     return extra

@@ -325,31 +325,62 @@ def passthrough(src: str, out: str) -> None:
         out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR)
 
 
-def resolve_cert_path(
+def render_cert_material(
     *,
-    cert_file: str,
     cert_template: str,
     cert_encoding: str,
     stamps: Dict[str, str],
     defaults: Dict[str, str],
-    tmpdir: str,
-) -> Optional[str]:
-    if cert_file:
-        return cert_file if pathlib.Path(cert_file).exists() else None
+) -> Tuple[Optional[bytes], bool]:
+    """Renders a `certificate` template into raw certificate bytes.
 
-    if not cert_template:
-        return None
+    Used by the `certificate` rule's `resolve-cert` action (see
+    `resolve_cert_mode`) to turn a `{KEY}`-templated `certificate` attribute
+    into real bytes exactly once, rather than in every `sign` action that
+    shares the certificate.
 
-    rendered = resolve_template(cert_template, stamps, defaults)
-    if not rendered:
-        return None
+    Returns a `(data, unresolved)` pair:
+      - `unresolved=True` means a `{KEY}` placeholder could not be resolved
+        from `stamps` or `defaults` at all -- always a hard error, since it
+        usually indicates a workspace status key that was never wired up.
+      - `data=None` (with `unresolved=False`) means a `path`-encoded template
+        rendered to a location that does not exist on disk. This is
+        deliberately tolerated rather than treated as an error, so a
+        `certificate` target whose real secret is unavailable in this build
+        environment (e.g. a contributor's machine without production
+        credentials) does not hard-fail the build; downstream `sign` actions
+        treat a missing/empty certificate the same as none configured.
+    """
+    rendered, unresolved = interpolate_template(cert_template, stamps, defaults)
+    if unresolved:
+        return None, True
 
     if cert_encoding == "base64":
-        out = pathlib.Path(tmpdir) / "cert.bin"
-        out.write_bytes(base64.b64decode(rendered.encode("utf-8")))
-        return str(out)
+        return base64.b64decode(rendered.encode("utf-8")), False
 
-    return rendered if pathlib.Path(rendered).exists() else None
+    src = pathlib.Path(rendered)
+    if not src.is_file():
+        return None, False
+    return src.read_bytes(), False
+
+
+def resolve_cert_path(*, cert_file: str) -> Optional[str]:
+    """Returns `cert_file` if it holds resolved certificate data.
+
+    The `certificate` rule resolves any `certificate` template into a File
+    ahead of time (see `certificate.bzl` and `resolve_cert_mode`), so by the
+    time a `sign` action runs, `cert_file` is always either empty or already
+    the certificate's final bytes -- there is no template left to interpolate
+    here. An empty file is the sentinel the resolver writes when it could not
+    resolve real material (see `render_cert_material`); it is treated the
+    same as no certificate at all.
+    """
+    if not cert_file:
+        return None
+    path = pathlib.Path(cert_file)
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    return cert_file
 
 
 def resolve_password(
@@ -919,8 +950,46 @@ def sign_one(
         identity=identity,
     )
 
+def resolve_cert_mode(args: argparse.Namespace) -> None:
+    """Handles `--mode resolve-cert`.
+
+    Renders a `certificate` template (a base64 blob or an on-disk path,
+    either possibly holding `{KEY}` stamp placeholders) into a single output
+    file. The `certificate` rule runs this once per certificate, evaluating
+    its own `stamp` attribute, so `sign` actions consume already-resolved
+    certificate material instead of re-interpolating the same template on
+    every signing action that shares the certificate.
+    """
+
+    stamps = load_stamp_files([args.info_file, args.version_file])
+    defaults = parse_defaults(args.stamp_default)
+
+    data, unresolved = render_cert_material(
+        cert_template=args.cert_template,
+        cert_encoding=args.cert_encoding,
+        stamps=stamps,
+        defaults=defaults,
+    )
+    if unresolved:
+        raise SystemExit(
+            "sign_tool: certificate template {!r} has a {{KEY}} placeholder "
+            "that isn't resolved by workspace status or `stamp_defaults`. "
+            "Enable stamping for this `certificate` target (`stamp = 1`, or "
+            "build with --stamp) or add the key to `stamp_defaults`.".format(
+                args.cert_template
+            )
+        )
+
+    ensure_parent(args.out)
+    # An empty file is the sentinel for "no certificate material resolved"
+    # (see `render_cert_material`); `sign` treats it exactly like no
+    # certificate configured at all instead of failing the build.
+    pathlib.Path(args.out).write_bytes(data or b"")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("sign", "resolve-cert"), default="sign")
     parser.add_argument("--tool", choices=("auto", "osslsigncode", "codesign", "cosign"), default="auto")
     parser.add_argument("--in", dest="infile", default="")
     parser.add_argument("--out", default="")
@@ -967,20 +1036,17 @@ def main() -> None:
     parser.add_argument("--version-file", default="")
     args = parser.parse_args()
 
+    if args.mode == "resolve-cert":
+        resolve_cert_mode(args)
+        return
+
     rel_src_pairs = load_rel_src_manifest(args.rel_src_manifest)
 
     stamps = load_stamp_files([args.info_file, args.version_file])
     defaults = parse_defaults(args.stamp_default)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cert_path = resolve_cert_path(
-            cert_file=args.cert_file,
-            cert_template=args.cert_template,
-            cert_encoding=args.cert_encoding,
-            stamps=stamps,
-            defaults=defaults,
-            tmpdir=tmpdir,
-        )
+        cert_path = resolve_cert_path(cert_file=args.cert_file)
         password = resolve_password(
             password_template=args.password_template,
             password_env=args.password_env,
