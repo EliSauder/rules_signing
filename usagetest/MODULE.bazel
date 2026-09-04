@@ -6,7 +6,22 @@ module(
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_signing", version = "0.0.1")
 bazel_dep(name = "rules_oci", version = "2.3.0")
-local_path_override(module_name = "rules_signing", path = "..")
+bazel_dep(name = "rules_python", version = "2.3.2")
+
+local_path_override(
+    module_name = "rules_signing",
+    path = "..",
+)
+
+# Deliberately select a different default interpreter from rules_signing's
+# internal signer runtime. The signer must keep resolving its CPython 3.11
+# LIEF wheel rather than inheriting a consuming ruleset's Python version.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    is_default = True,
+    python_version = "3.12",
+)
+use_repo(python, "python_3_12")
 
 # rules_signing registers no signing toolchains of its own, so a consumer picks
 # its tool versions and registers them explicitly.

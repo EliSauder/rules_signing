@@ -81,6 +81,15 @@ PYTHON_VERSION = "3.11"
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(python_version = PYTHON_VERSION)
 
+# Require every Python package in this module to declare its own initializer.
+# This keeps the package layout valid once rules_python disables implicit
+# __init__.py creation by default.
+rules_python_config = use_extension(
+    "@rules_python//python/extensions:config.bzl",
+    "config",
+)
+rules_python_config.explicit_init_py(default = True)
+
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
     hub_name = "signing_pypi",

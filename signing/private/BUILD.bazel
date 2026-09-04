@@ -2,7 +2,10 @@ load("@bazel_lib//:bzl_library.bzl", "bzl_library")
 
 package(default_visibility = ["//signing:__subpackages__"])
 
-exports_files(glob(["*.bzl"]))
+exports_files(glob([
+    "*.bzl",
+    "__init__.py",
+]))
 
 filegroup(
     name = "bzl_srcs",

@@ -1,6 +1,13 @@
 load("@rules_python//python:defs.bzl", "py_binary")
+load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 
 package(default_visibility = ["//signing/tests:__subpackages__"])
+
+compile_pip_requirements(
+    name = "requirements",
+    src = "requirements.txt",
+    requirements_txt = "requirements_lock_txt",
+)
 
 # Throwaway self-signed development certificates. See README.md: the private
 # keys and password are public on purpose and sign nothing but test fixtures.
@@ -27,7 +34,12 @@ filegroup(
 # that tests never generate keys or reach the network.
 py_binary(
     name = "regenerate",
-    srcs = ["regenerate.py"],
+    srcs = [
+        "//signing:__init__.py",
+        "//signing/tests:__init__.py",
+        "__init__.py",
+        "regenerate.py",
+    ],
     args = [
         "--cosign=$(rootpath @signing_cosign//:cosign_file)",
         "--rcodesign=$(rootpath //signing/tests:codesign_tool)",
