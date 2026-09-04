@@ -1101,6 +1101,259 @@ def resolve_cert_mode(args: argparse.Namespace) -> None:
     pathlib.Path(args.out).write_bytes(data or b"")
 
 
+_DN_FIELDS = (
+    ("country", "C"),
+    ("state", "ST"),
+    ("locality", "L"),
+    ("organization", "O"),
+    ("organizational_unit", "OU"),
+    ("common_name", "CN"),
+    ("email", "emailAddress"),
+)
+
+
+def escape_openssl_config_value(value: str) -> str:
+    """Escapes a value for inclusion in an OpenSSL configuration file.
+
+    Subject fields come straight from a BUILD file, so they can legitimately
+    contain characters the config parser treats specially. `#` starts a
+    comment and would silently truncate the value, `$` introduces variable
+    expansion, and `"`/`\\` drive quoting, all of which would otherwise
+    rewrite the subject rather than fail. Newlines cannot be escaped at all --
+    they would end the entry -- so they are rejected.
+    """
+
+    if "\n" in value or "\r" in value:
+        raise SystemExit(
+            "sign_tool: certificate subject values cannot contain newlines: "
+            "{!r}".format(value)
+        )
+    return (
+        value.replace("\\", "\\\\")
+        .replace("$", "\\$")
+        .replace('"', '\\"')
+        .replace("#", "\\#")
+    )
+
+
+def build_openssl_config(
+    *,
+    subject: Dict[str, str],
+    key_usage: Sequence[str],
+    extended_key_usage: Sequence[str],
+    subject_alt_names: Sequence[str],
+) -> str:
+    """Builds the `openssl req` config describing the certificate to issue.
+
+    A config file is used rather than `-subj`/`-addext` because subject values
+    are arbitrary user strings: `-subj` gives `/` and `=` a structural meaning
+    that a value such as an organization name containing a slash would break,
+    while config entries are plain `key = value` lines.
+    """
+
+    dn_lines = []
+    for attr_name, oid in _DN_FIELDS:
+        value = subject.get(attr_name, "")
+        if value:
+            dn_lines.append("{} = {}".format(oid, escape_openssl_config_value(value)))
+
+    ext_lines = [
+        "basicConstraints = critical,CA:FALSE",
+        "subjectKeyIdentifier = hash",
+    ]
+    if key_usage:
+        ext_lines.append("keyUsage = critical,{}".format(",".join(key_usage)))
+    if extended_key_usage:
+        ext_lines.append("extendedKeyUsage = {}".format(",".join(extended_key_usage)))
+    if subject_alt_names:
+        ext_lines.append("subjectAltName = {}".format(
+            ",".join(escape_openssl_config_value(s) for s in subject_alt_names),
+        ))
+
+    return "\n".join(
+        [
+            "[ req ]",
+            "distinguished_name = rules_signing_dn",
+            "prompt = no",
+            "x509_extensions = rules_signing_ext",
+            "",
+            "[ rules_signing_dn ]",
+        ]
+        + dn_lines
+        + [
+            "",
+            "[ rules_signing_ext ]",
+        ]
+        + ext_lines
+        + [""],
+    )
+
+
+def generate_private_key(
+    *,
+    openssl: str,
+    key_type: str,
+    key_size: int,
+    ec_curve: str,
+    out: str,
+) -> None:
+    cmd = [openssl, "genpkey", "-outform", "PEM", "-out", out]
+    if key_type == "rsa":
+        cmd.extend(["-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:{}".format(key_size)])
+    elif key_type == "ec":
+        cmd.extend([
+            "-algorithm",
+            "EC",
+            "-pkeyopt",
+            "ec_paramgen_curve:{}".format(ec_curve),
+            # Named-curve encoding is what every signer (and Apple's tooling in
+            # particular) expects; the explicit-parameters form openssl would
+            # otherwise emit is widely rejected.
+            "-pkeyopt",
+            "ec_param_enc:named_curve",
+        ])
+    else:
+        raise SystemExit(
+            "sign_tool: unknown key type {!r}; expected 'rsa' or 'ec'".format(key_type)
+        )
+    run_cmd(cmd)
+
+
+def gen_self_signed_mode(args: argparse.Namespace) -> None:
+    """Handles `--mode gen-self-signed`.
+
+    Issues a throwaway key pair and a self-signed X.509 certificate for it,
+    writing the signing material in the same shapes the `certificate` rule
+    accepts: a unified PEM (private key followed by the certificate, which is
+    what osslsigncode, rcodesign and cosign all consume) or a PKCS#12 bundle.
+    The bare certificate is always written alongside it so verification has a
+    trust anchor to point at.
+
+    openssl does the work rather than a Python crypto library because the
+    signer already depends on an optional openssl toolchain for PKCS#12
+    conversion, and adding an X.509 implementation as a hard runtime
+    dependency of every build that merely signs a file would be a much larger
+    cost than reusing a tool that is already there.
+    """
+
+    if not args.openssl_tool:
+        raise SystemExit(
+            "sign_tool: generating a self-signed certificate requires the "
+            "openssl toolchain. Register it with:\n"
+            "    signing_tools.openssl(path = \"openssl\")\n"
+            "    register_toolchains(\"@signing_openssl//:openssl_toolchain\")"
+        )
+    if args.validity_days < 1:
+        raise SystemExit("sign_tool: --validity-days must be at least 1")
+
+    stamps = load_stamp_files([args.info_file, args.version_file])
+    defaults = parse_defaults(args.stamp_default)
+    password = resolve_password(
+        password_template=args.password_template,
+        password_env=args.password_env,
+        stamps=stamps,
+        defaults=defaults,
+    )
+
+    subject = {
+        "common_name": resolve_template(args.common_name, stamps, defaults) or "",
+        "country": args.country,
+        "state": args.state,
+        "locality": args.locality,
+        "organization": resolve_template(args.organization, stamps, defaults) or "",
+        "organizational_unit": args.organizational_unit,
+        "email": args.email,
+    }
+    if not subject["common_name"]:
+        raise SystemExit("sign_tool: --common-name is required and must not be empty")
+
+    config = build_openssl_config(
+        subject=subject,
+        key_usage=args.key_usage,
+        extended_key_usage=args.extended_key_usage,
+        subject_alt_names=args.subject_alt_name,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = pathlib.Path(tmpdir)
+        config_path = tmp / "openssl.cnf"
+        config_path.write_text(config, encoding="utf-8")
+        key_path = tmp / "key.pem"
+        cert_path = tmp / "cert.pem"
+
+        generate_private_key(
+            openssl=args.openssl_tool,
+            key_type=args.key_type,
+            key_size=args.key_size,
+            ec_curve=args.ec_curve,
+            out=str(key_path),
+        )
+        run_cmd([
+            args.openssl_tool,
+            "req",
+            "-new",
+            "-x509",
+            "-{}".format(args.digest),
+            "-key",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-days",
+            str(args.validity_days),
+            "-config",
+            str(config_path),
+            "-extensions",
+            "rules_signing_ext",
+            "-utf8",
+        ])
+
+        ensure_parent(args.out)
+        if args.format == "p12":
+            env = dict(os.environ)
+            env["RULES_SIGNING_P12_PASSWORD"] = password
+            run_cmd(
+                [
+                    args.openssl_tool,
+                    "pkcs12",
+                    "-export",
+                    "-inkey",
+                    str(key_path),
+                    "-in",
+                    str(cert_path),
+                    "-name",
+                    subject["common_name"],
+                    "-passout",
+                    "env:RULES_SIGNING_P12_PASSWORD",
+                    "-out",
+                    args.out,
+                ],
+                env=env,
+            )
+        else:
+            # Key first, then the certificate: osslsigncode is handed the same
+            # file as both `-certs` and `-key`, and reads the first matching
+            # block of each kind, so a single file has to carry both.
+            pathlib.Path(args.out).write_bytes(
+                key_path.read_bytes() + cert_path.read_bytes()
+            )
+
+        if args.cert_out:
+            ensure_parent(args.cert_out)
+            pathlib.Path(args.cert_out).write_bytes(cert_path.read_bytes())
+        if args.public_key_out:
+            ensure_parent(args.public_key_out)
+            run_cmd([
+                args.openssl_tool,
+                "x509",
+                "-in",
+                str(cert_path),
+                "-pubkey",
+                "-noout",
+                "-out",
+                args.public_key_out,
+            ])
+
+
 def sign_mode(args: argparse.Namespace) -> None:
     """Handles `--mode sign`.
 
@@ -1196,7 +1449,11 @@ def sign_mode(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("sign", "resolve-cert"), default="sign")
+    parser.add_argument(
+        "--mode",
+        choices=("sign", "resolve-cert", "gen-self-signed"),
+        default="sign",
+    )
     # Expanded by expand_argfiles before argparse runs; declared here so it
     # shows up in --help.
     parser.add_argument(
@@ -1249,10 +1506,34 @@ def main() -> None:
     parser.add_argument("--stamp-default", action="append", default=[])
     parser.add_argument("--info-file", default="")
     parser.add_argument("--version-file", default="")
+
+    # --mode gen-self-signed
+    parser.add_argument("--cert-out", default="")
+    parser.add_argument("--public-key-out", default="")
+    parser.add_argument("--format", choices=("pem", "p12"), default="pem")
+    parser.add_argument("--key-type", choices=("rsa", "ec"), default="rsa")
+    parser.add_argument("--key-size", type=int, default=2048)
+    parser.add_argument("--ec-curve", default="prime256v1")
+    parser.add_argument("--digest", default="sha256")
+    parser.add_argument("--validity-days", type=int, default=365)
+    parser.add_argument("--common-name", default="")
+    parser.add_argument("--organization", default="")
+    parser.add_argument("--organizational-unit", default="")
+    parser.add_argument("--country", default="")
+    parser.add_argument("--state", default="")
+    parser.add_argument("--locality", default="")
+    parser.add_argument("--email", default="")
+    parser.add_argument("--subject-alt-name", action="append", default=[])
+    parser.add_argument("--key-usage", action="append", default=[])
+    parser.add_argument("--extended-key-usage", action="append", default=[])
     args = parser.parse_args(expand_argfiles(sys.argv[1:]))
 
     if args.mode == "resolve-cert":
         resolve_cert_mode(args)
+        return
+
+    if args.mode == "gen-self-signed":
+        gen_self_signed_mode(args)
         return
 
     sign_mode(args)

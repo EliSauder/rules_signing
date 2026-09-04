@@ -1481,6 +1481,56 @@ class SignToolUnitTest(unittest.TestCase):
             sign_tool.sign_mode(args)
         self.assertIn("requires --out-dir", str(ctx.exception))
 
+    def test_openssl_config_escapes_values_the_parser_would_reinterpret(self):
+        """Subject values are arbitrary strings, not openssl config syntax."""
+
+        config = sign_tool.build_openssl_config(
+            subject={
+                "common_name": "cn $HOME #1 \\ \"quoted\"",
+                "organization": "Example / Org",
+            },
+            key_usage=["digitalSignature"],
+            extended_key_usage=["codeSigning"],
+            subject_alt_names=["DNS:example.invalid"],
+        )
+
+        # `#` in particular would otherwise start a comment and silently
+        # truncate the subject rather than fail.
+        self.assertIn(
+            "CN = cn \\$HOME \\#1 \\\\ \\\"quoted\\\"",
+            config,
+        )
+
+        # A slash is only special to `-subj`, which is exactly why the config
+        # file is used instead: it needs no escaping here.
+        self.assertIn("O = Example / Org", config)
+        self.assertIn("basicConstraints = critical,CA:FALSE", config)
+        self.assertIn("keyUsage = critical,digitalSignature", config)
+        self.assertIn("extendedKeyUsage = codeSigning", config)
+        self.assertIn("subjectAltName = DNS:example.invalid", config)
+
+        # Fields left unset must not appear at all: an empty DN entry is a
+        # parse error rather than an omitted attribute.
+        self.assertNotIn("OU", config)
+        self.assertNotIn("emailAddress", config)
+
+    def test_openssl_config_rejects_newlines_in_subject_values(self):
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.build_openssl_config(
+                subject={"common_name": "first\nsecond"},
+                key_usage=[],
+                extended_key_usage=[],
+                subject_alt_names=[],
+            )
+        self.assertIn("cannot contain newlines", str(ctx.exception))
+
+    def test_generating_a_certificate_without_openssl_is_actionable(self):
+        args = self._args()
+        args.validity_days = 365
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.gen_self_signed_mode(args)
+        self.assertIn("openssl toolchain", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

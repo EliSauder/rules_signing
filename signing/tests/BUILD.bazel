@@ -1,4 +1,4 @@
-load("//signing:defs.bzl", "sign", "certificate")
+load("//signing:defs.bzl", "certificate", "self_signed_certificate", "sign")
 load("//signing/tests:tree.bzl", "make_tree")
 load("//signing/tests:cross.bzl", "platform_binary")
 load("//signing/tests:fixtures.bzl", "app_bundle", "codesign_tool", "embedded_sign")
@@ -252,6 +252,14 @@ SIGNED_DESCRIPTION = "rules_signing development signature"
 
 SIGNED_URL = "https://example.invalid/rules_signing"
 
+# Subject and settings for the certificates issued during the build by
+# `self_signed_certificate`, shared with the test that verifies them.
+SELF_SIGNED_COMMON_NAME = "rules_signing generated (DO NOT TRUST)"
+
+SELF_SIGNED_VALIDITY_DAYS = 30
+
+SELF_SIGNED_PASSWORD = "rules-signing-generated"
+
 sign(
     name = "signed_real_pe_pem",
     src = ":hello_exe",
@@ -462,9 +470,117 @@ sign(
     tool = "cosign",
 )
 
+# ---------------------------------------------------------------------------
+# Certificates issued during the build by `self_signed_certificate`, rather
+# than checked in. Each is signed with for real and verified against its own
+# generated trust anchor, which is the only thing that proves the generated
+# material is a usable credential and not merely a well-formed file.
+# ---------------------------------------------------------------------------
+
+self_signed_certificate(
+    name = "self_signed_pem_cert",
+    common_name = SELF_SIGNED_COMMON_NAME,
+    organization = "rules_signing tests",
+    subject_alt_names = ["DNS:rules-signing.invalid"],
+    validity_days = SELF_SIGNED_VALIDITY_DAYS,
+)
+
+# The other end of the matrix: an EC key in a password-protected PKCS#12
+# bundle, so both key algorithms and both output formats are covered.
+self_signed_certificate(
+    name = "self_signed_p12_cert",
+    common_name = SELF_SIGNED_COMMON_NAME,
+    format = "p12",
+    key_type = "ec",
+    password = SELF_SIGNED_PASSWORD,
+    validity_days = SELF_SIGNED_VALIDITY_DAYS,
+)
+
+# The generated files are not predeclared outputs, so they are pulled out
+# individually through the output groups the rule exposes.
+[
+    filegroup(
+        name = "{}_{}".format(cert, group),
+        srcs = [":" + cert],
+        output_group = group,
+    )
+    for cert in [
+        "self_signed_pem_cert",
+        "self_signed_p12_cert",
+    ]
+    for group in [
+        "certificate",
+        "certificate_only",
+        "public_key",
+    ]
+]
+
+sign(
+    name = "signed_self_signed_pe",
+    src = ":hello_exe",
+    certificate = ":self_signed_pem_cert",
+    tool = "osslsigncode",
+)
+
+sign(
+    name = "signed_self_signed_pe_p12",
+    src = ":hello_exe",
+    certificate = ":self_signed_p12_cert",
+    tool = "osslsigncode",
+)
+
+sign(
+    name = "signed_self_signed_blobs",
+    src = ":unsigned_text_files",
+    certificate = ":self_signed_pem_cert",
+    tool = "cosign",
+)
+
 # Gives tests the rcodesign binary, which unlike cosign and osslsigncode is
 # only reachable through toolchain resolution.
 codesign_tool(name = "codesign_tool")
+
+py_test(
+    name = "self_signed_certificate_test",
+    size = "small",
+    srcs = [
+        "//signing:__init__.py",
+        "__init__.py",
+        "self_signed_certificate_test.py",
+    ],
+    args = [
+        "--openssl=$(rootpath @signing_openssl//:openssl_file)",
+        "--osslsigncode=$(rootpath @signing_osslsigncode//:osslsigncode_file)",
+        "--cosign=$(rootpath @signing_cosign//:cosign_file)",
+        "--common-name='" + SELF_SIGNED_COMMON_NAME + "'",
+        "--validity-days=" + str(SELF_SIGNED_VALIDITY_DAYS),
+        "--p12-password=" + SELF_SIGNED_PASSWORD,
+        "--pem-material=$(rootpath :self_signed_pem_cert_certificate)",
+        "--pem-certificate=$(rootpath :self_signed_pem_cert_certificate_only)",
+        "--pem-public-key=$(rootpath :self_signed_pem_cert_public_key)",
+        "--p12-material=$(rootpath :self_signed_p12_cert_certificate)",
+        "--p12-certificate=$(rootpath :self_signed_p12_cert_certificate_only)",
+        "--signed-pe=$(rootpath :signed_self_signed_pe)/signing/tests/hello.exe::" +
+        "$(rootpath :self_signed_pem_cert_certificate_only)",
+        "--signed-pe=$(rootpath :signed_self_signed_pe_p12)/signing/tests/hello.exe::" +
+        "$(rootpath :self_signed_p12_cert_certificate_only)",
+        "--signed-blob=$(rootpath :signed_self_signed_blobs)/signing/tests/testdata_sign/docs/readme.txt",
+    ],
+    data = [
+        ":self_signed_p12_cert_certificate",
+        ":self_signed_p12_cert_certificate_only",
+        ":self_signed_pem_cert_certificate",
+        ":self_signed_pem_cert_certificate_only",
+        ":self_signed_pem_cert_public_key",
+        ":signed_self_signed_blobs",
+        ":signed_self_signed_pe",
+        ":signed_self_signed_pe_p12",
+        "@signing_cosign//:cosign_file",
+        "@signing_openssl//:openssl_file",
+        "@signing_osslsigncode//:osslsigncode_file",
+    ],
+    deps = ["@rules_python//python/runfiles"],
+)
 
 py_test(
     name = "sign_verify_test",

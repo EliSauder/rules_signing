@@ -37,6 +37,7 @@ bzl_library(
     name = "defs_bzl",
     srcs = [
         "certificate.bzl",
+        "self_signed_certificate.bzl",
         "sign.bzl",
     ],
     visibility = ["//visibility:public"],
