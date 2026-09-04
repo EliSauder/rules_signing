@@ -2,6 +2,8 @@
 # the tool repositories (see repositories.bzl) so that this module never
 # depends on them: downstream consumers declare and register their own.
 
+load("@bazel_lib//:bzl_library.bzl", "bzl_library")
+
 toolchain_type(
     name = "cosign_toolchain_type",
     visibility = ["//visibility:public"],
@@ -19,5 +21,42 @@ exports_files(["toolchains.bzl"])
 # needs the conversion.
 toolchain_type(
     name = "openssl_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+bzl_library(
+    name = "cosign_versions_bzl",
+    srcs = ["cosign_versions.bzl"],
+    visibility = ["//visibility:public"],
+)
+
+bzl_library(
+    name = "osslsigncode_versions_bzl",
+    srcs = ["osslsigncode_versions.bzl"],
+    visibility = ["//visibility:public"],
+)
+
+bzl_library(
+    name = "versions_bzl",
+    srcs = ["versions.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":cosign_versions_bzl",
+        ":osslsigncode_versions_bzl",
+    ],
+)
+
+bzl_library(
+    name = "repositories_bzl",
+    srcs = ["repositories.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [":versions_bzl"],
+)
+
+# `toolchains.bzl` is public API: consumers who supply their own tool binaries
+# instead of using the `signing_tools` extension load these rules directly.
+bzl_library(
+    name = "toolchains_bzl",
+    srcs = ["toolchains.bzl"],
     visibility = ["//visibility:public"],
 )

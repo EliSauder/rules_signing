@@ -84,6 +84,47 @@ def _needs_toolchain(srcs, selected_tool, tool_kind):
             return True
     return False
 
+def _needs_toolchain_reason(srcs, selected_tool, tool_kind):
+    """Explains why `tool_kind` was required, for the failure message.
+
+    With an explicit `tool` the answer is trivial, but under `auto` the
+    requirement usually comes from an input whose signer cannot be known until
+    the action runs, which is otherwise a confusing thing to be asked to
+    register a toolchain for.
+    """
+    if selected_tool == tool_kind:
+        return "`tool = \"{}\"` was requested".format(tool_kind)
+
+    for f in srcs:
+        if f.is_directory:
+            return (
+                "`tool = \"auto\"` and '{}' is a directory artifact, whose ".format(f.short_path) +
+                "contents are only known when the action runs, so every " +
+                "signer must be available"
+            )
+        if not _has_known_extension(f):
+            return (
+                "`tool = \"auto\"` and '{}' has no recognizable ".format(f.short_path) +
+                "extension, so it is classified by its header bytes at " +
+                "execution time and every signer must be available"
+            )
+
+    return "`tool = \"auto\"` and at least one input is signed with it"
+
+def _fail_missing_toolchain(tool_kind, registration, reason, selected_tool):
+    hint = ""
+    if selected_tool == "auto":
+        hint = (
+            "\nAlternatively, set `tool` on this target to name the single " +
+            "signer you need, which requests no other toolchain."
+        )
+    fail(
+        "rules_signing: the {} toolchain is required but was not resolved.\n".format(tool_kind) +
+        "Required because {}.\n".format(reason) +
+        "Register it with:\n    register_toolchains({})".format(registration) +
+        hint,
+    )
+
 def _codesign_tool_file(codesign_tc):
     """Returns the codesign executable File from the codesign.bzl toolchain.
 
@@ -107,7 +148,12 @@ def _sign_impl(ctx):
     osslsigncode_tc = ctx.toolchains[_OSSLSIGNCODE_TOOLCHAIN]
     needs_osslsigncode = _needs_toolchain(srcs, ctx.attr.tool, "osslsigncode")
     if needs_osslsigncode and (osslsigncode_tc == None or not hasattr(osslsigncode_tc, "tool")):
-        fail("osslsigncode toolchain is required but was not resolved")
+        _fail_missing_toolchain(
+            "osslsigncode",
+            "\"@signing_osslsigncode//:osslsigncode_toolchain\"",
+            _needs_toolchain_reason(srcs, ctx.attr.tool, "osslsigncode"),
+            ctx.attr.tool,
+        )
     osslsigncode_tool = osslsigncode_tc.tool.path if osslsigncode_tc and hasattr(osslsigncode_tc, "tool") else ""
     args.add("--osslsigncode-tool", osslsigncode_tool)
 
@@ -115,7 +161,12 @@ def _sign_impl(ctx):
     cosign_tc = ctx.toolchains[_COSIGN_TOOLCHAIN]
     needs_cosign = _needs_toolchain(srcs, ctx.attr.tool, "cosign")
     if needs_cosign and (cosign_tc == None or not hasattr(cosign_tc, "tool")):
-        fail("cosign toolchain is required but was not resolved")
+        _fail_missing_toolchain(
+            "cosign",
+            "\"@signing_cosign//:cosign_toolchain\"",
+            _needs_toolchain_reason(srcs, ctx.attr.tool, "cosign"),
+            ctx.attr.tool,
+        )
     cosign_tool = cosign_tc.tool.path if cosign_tc and hasattr(cosign_tc, "tool") else ""
     args.add("--cosign-tool", cosign_tool)
 
@@ -123,9 +174,11 @@ def _sign_impl(ctx):
     codesign_tc = ctx.toolchains[_CODESIGN_TOOLCHAIN]
     needs_codesign = _needs_toolchain(srcs, ctx.attr.tool, "codesign")
     if needs_codesign and codesign_tc == None:
-        fail(
-            "codesign toolchain is required but was not resolved; register it with " +
-            "register_toolchains(\"@codesign.bzl//toolchain:all\")",
+        _fail_missing_toolchain(
+            "codesign",
+            "\"@codesign.bzl//toolchain:all\"",
+            _needs_toolchain_reason(srcs, ctx.attr.tool, "codesign"),
+            ctx.attr.tool,
         )
     codesign_file = _codesign_tool_file(codesign_tc)
     codesign_tool = codesign_file.path if codesign_file else ""
@@ -224,6 +277,14 @@ sign = rule(
         "tool": attr.string(
             default = "auto",
             values = ["osslsigncode", "codesign", "cosign", "auto"],
+            doc = "Which signer to use, or \"auto\" (the default) to select " +
+                  "one per file from its extension and, failing that, its " +
+                  "header bytes. Note that \"auto\" requires every signing " +
+                  "toolchain to be registered whenever an input is a " +
+                  "directory artifact or has no recognizable extension, " +
+                  "because the contents that decide the signer are not " +
+                  "known until the action runs. Naming a single tool " +
+                  "explicitly requests only that toolchain.",
         ),
         "certificate": attr.label(
             providers = [[SigningCertificateInfo]],

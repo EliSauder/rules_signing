@@ -18,11 +18,13 @@
 - Preserve the original file alongside any detached signature outputs.
 - Preserve upstream runfiles on wrapped targets (including `oci_image` runfiles).
 - Support cert/key material from:
-  - direct file (`certificate_file`)
+  - direct file (`certificate_file`, a `.p12`/`.pfx`/`.pem`/`.key` label)
   - stamped template (`certificate`) using `{KEY}` placeholders.
 - Accept either PKCS#12 or PEM credentials. The format is detected from the
   file's contents rather than its name, so base64-encoded and stamped
-  certificates work regardless of how they are named on disk.
+  certificates work regardless of how they are named on disk. (A direct
+  `certificate_file` label must still carry a `.p12`, `.pfx`, `.pem` or `.key`
+  extension, which is Bazel's own input filter rather than a format decision.)
 - Use a single certificate across all three signers. PKCS#12 is converted to
   PEM and imported into cosign's key format during the build (see
   [Signing with a single certificate](#signing-with-a-single-certificate)).
@@ -58,7 +60,8 @@ register_toolchains(
     "@signing_osslsigncode//:osslsigncode_toolchain",
 )
 
-# Only needed if you sign Apple artifacts or Mach-O binaries.
+# Needed if you sign Apple artifacts or Mach-O binaries, and also for any
+# directory artifact signed with `tool = "auto"` (see below).
 bazel_dep(name = "codesign.bzl", version = "<version>")
 
 register_toolchains("@codesign.bzl//toolchain:all")
@@ -68,6 +71,29 @@ Only register the toolchains you actually need. `sign` resolves toolchains
 lazily and fails with an actionable message naming the missing registration if
 an input requires a signer you have not registered.
 
+**Directory artifacts require every signer to be registered.** Which signer an
+individual file needs is decided from its extension or its header bytes, and
+the contents of a directory artifact (an `oci_image` layout, a `.app` bundle,
+or any other tree artifact) do not exist yet at analysis time. `tool = "auto"`
+therefore has to assume a tree may hold anything — nested `.exe`/`.dll` files
+needing `osslsigncode`, or Mach-O binaries and `.app`/`.dmg`/`.pkg` bundles
+needing `codesign` — and requires **all** signing toolchains, including
+`codesign.bzl`, even when nothing in the tree turns out to be an Apple
+artifact. The same applies to extensionless files, which are classified by
+sniffing their headers while the action runs.
+
+If you do not want to register signers you will never use, name the one you
+need explicitly and no other toolchain is requested:
+
+```starlark
+sign(
+    name = "signed_image",
+    src = ":my_oci_image",
+    certificate = ":release_cert",
+    tool = "cosign",  # skips the osslsigncode/codesign toolchain requirement
+)
+```
+
 You may also skip the `signing_tools` extension entirely and point the
 `cosign_toolchain` / `osslsigncode_toolchain` rules from
 `@rules_signing//signing/toolchains:toolchains.bzl` at binaries you supply.
@@ -75,7 +101,7 @@ You may also skip the `signing_tools` extension entirely and point the
 ## Basic usage
 
 ```starlark
-load("//signing:defs.bzl", "sign", "certificate")
+load("@rules_signing//signing:defs.bzl", "sign", "certificate")
 
 certificate(
     name = "release_cert",
@@ -97,7 +123,7 @@ sign(
 
 The `sign` target emits a **directory artifact** containing the signed/copied files under the same relative paths as the wrapped target.
 
-For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs.
+For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs. Note that with `tool = "auto"` any directory artifact requires every signing toolchain to be registered — see [Setup](#setup).
 
 ### Stamping
 
@@ -251,9 +277,13 @@ use_repo(signing_tools, "signing_openssl")
 register_toolchains("@signing_openssl//:openssl_toolchain")
 ```
 
-The toolchain is opt-in because the BCR `openssl` module builds from source, and
-most builds never need the conversion. Without it, a PKCS#12 certificate routed
-to `cosign` fails with an actionable message rather than a cryptic cosign error.
+The toolchain is opt-in because most builds never need the conversion. The
+repository rule adopts an `openssl` already present on the host — `path`
+accepts either a literal path or a bare program name resolved against `PATH`,
+which is why the same tag works on Linux, macOS and Windows. Use
+`signing_tools.openssl(label = ...)` instead to point at an `openssl` built by
+another module. Without the toolchain, a PKCS#12 certificate routed to
+`cosign` fails with an actionable message rather than a cryptic cosign error.
 
 Production Apple distribution still requires a real Apple-issued Developer ID
 certificate, which no other signer will accept — the single-certificate path is
@@ -284,5 +314,5 @@ A real consumer-module workspace lives at `usagetest/` with its own `MODULE.baze
 ```bash
 cd usagetest
 bazel --nohome_rc clean --expunge
-bazel --nohome_rc build //:signed_outputs
+bazel --nohome_rc build //:signed_outputs //:signed_oci_image
 ```
