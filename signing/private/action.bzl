@@ -315,8 +315,8 @@ def signing_context(
                 _needs_toolchain_reason(srcs, tool_mode, kind, require, require_reason),
                 tool_mode,
             )
-        args.add("--{}-tool".format(kind), tool_file.path if tool_file else "")
         if tool_file:
+            args.add("--{}-tool".format(kind), tool_file.path if tool_file else "")
             inputs.append(tool_file)
 
     # openssl is optional and only consulted when PKCS#12 material has to be

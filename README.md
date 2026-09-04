@@ -20,6 +20,8 @@
 - Support cert/key material from:
   - direct file (`certificate_file`, a `.p12`/`.pfx`/`.pem`/`.key` label)
   - stamped template (`certificate`) using `{KEY}` placeholders.
+  - a certificate generated during the build by `self_signed_certificate` (see
+    [Generating a self-signed certificate](#generating-a-self-signed-certificate)).
 - Accept either PKCS#12 or PEM credentials. The format is detected from the
   file's contents rather than its name, so base64-encoded and stamped
   certificates work regardless of how they are named on disk. (A direct
@@ -288,6 +290,73 @@ another module. Without the toolchain, a PKCS#12 certificate routed to
 Production Apple distribution still requires a real Apple-issued Developer ID
 certificate, which no other signer will accept — the single-certificate path is
 for development and internal signing.
+
+### Generating a self-signed certificate
+
+Not every build has a key to sign with. Contributors, CI branches and local
+development builds usually have none, and checking a private key into the
+repository to fill the gap makes the credential public and permanent.
+`self_signed_certificate` issues one during the build instead, and provides it
+wherever a `certificate` target is accepted:
+
+```starlark
+load("@rules_signing//signing:defs.bzl", "self_signed_certificate", "sign")
+
+self_signed_certificate(
+    name = "dev_cert",
+    common_name = "Example development (DO NOT TRUST)",
+    organization = "Example",
+    validity_days = 365,
+)
+
+sign(
+    name = "signed_bundle",
+    src = ":artifact_bundle",
+    certificate = ":dev_cert",
+)
+```
+
+The rule requires the [openssl toolchain](#signing-with-a-single-certificate)
+and produces three files:
+
+| File | Contents |
+| --- | --- |
+| `<name>.pem` (or `<name>.p12`) | The signing material: private key plus certificate. This is what `SigningCertificateInfo` points at. |
+| `<name>.crt` | The certificate alone — the trust anchor to verify against, e.g. `osslsigncode verify -CAfile <name>.crt`. |
+| `<name>.pub` | The certificate's public key, for `cosign verify-blob --key`. |
+
+Each is also exposed as an output group (`certificate`, `certificate_only` and
+`public_key`) so a single file can be extracted with a `filegroup`:
+
+```starlark
+filegroup(
+    name = "dev_cert_anchor",
+    srcs = [":dev_cert"],
+    output_group = "certificate_only",
+)
+```
+
+By default the rule emits an RSA-2048 key and a unified PEM, which every signer
+reads directly; `format = "p12"` wraps it in a PKCS#12 bundle protected by
+`password` instead, and `key_type = "ec"` selects an EC key (`ec_curve`,
+default P-256). The certificate carries a `digitalSignature` key usage and a
+`codeSigning` extended key usage and nothing else, which is exactly the profile
+[all three signers accept](#signing-with-a-single-certificate). Subject fields
+(`organizational_unit`, `country`, `state`, `locality`, `email`,
+`subject_alt_names`) and `{KEY}` stamping of `common_name`, `organization` and
+`password` work the same way as on `certificate`.
+
+Two things follow from the certificate being generated rather than supplied:
+
+- **Nothing trusts it.** It is its own issuer, so verification only succeeds
+  against the generated `<name>.crt`/`<name>.pub`. Use it for development,
+  tests and internal artifacts; releases still need a real certificate.
+- **The key is regenerated whenever the action reruns**, which invalidates
+  signatures made with the previous one. The action is marked as not remotely
+  cacheable so a freshly generated private key is never uploaded to a cache
+  other people can read; the local cache still keeps it stable across builds.
+  Pin it with `certificate(certificate_file = ...)` if you need a credential
+  that outlives your output tree.
 
 ### Issuing chains
 

@@ -1421,6 +1421,85 @@ class SignToolUnitTest(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b"MZ-signed")
             self.assertEqual(recorded["infile"], str(target))
 
+    def test_single_file_mode_normalizes_a_redundant_input_path(self) -> None:
+        # A caller may hand over a path with redundant "." / ".." segments or
+        # duplicate slashes (e.g. built up from concatenated Bazel runfile
+        # paths). Every downstream consumer -- the existence check, the
+        # signer, and the on-disk write -- must agree on the same normalized
+        # path rather than mixing the raw and normalized spellings.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "sub").mkdir()
+            target = root / "Uninstall.exe"
+            target.write_bytes(b"MZ-original")
+            messy_infile = str(root) + "/sub/..//Uninstall.exe"
+
+            recorded = {}
+
+            def fake_osslsigncode(**kwargs):
+                recorded.update(kwargs)
+                self.assertNotEqual(kwargs["infile"], kwargs["outfile"])
+                pathlib.Path(kwargs["outfile"]).parent.mkdir(parents=True, exist_ok=True)
+                pathlib.Path(kwargs["outfile"]).write_bytes(b"MZ-signed")
+
+            with mock.patch.object(sign_tool, "sign_with_osslsigncode", fake_osslsigncode):
+                args = self._args()
+                args.mode = "sign"
+                args.infile = messy_infile
+                args.out = ""
+                args.out_dir = ""
+                args.rel_src_manifest = ""
+                args.cert_file = "/fake/cert.p12"
+                args.password_template = ""
+                args.password_env = ""
+                args.identity_template = ""
+                args.stamp_default = []
+                args.info_file = ""
+                args.version_file = ""
+                sign_tool.sign_mode(args)
+
+            normalized = os.path.normpath(messy_infile)
+            self.assertEqual(target.read_bytes(), b"MZ-signed")
+            self.assertEqual(recorded["infile"], normalized)
+
+    def test_single_file_mode_detects_in_place_across_equivalent_spellings(self) -> None:
+        # --out may spell the same file differently than --in (redundant
+        # segments, duplicate slashes, etc.); the in-place detection compares
+        # resolved paths, so these equivalent spellings must still be treated
+        # as signing in place rather than as distinct input/output files.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "sub").mkdir()
+            target = root / "in.txt"
+            target.write_bytes(b"payload")
+
+            recorded = {}
+
+            def fake_osslsigncode(**kwargs):
+                recorded.update(kwargs)
+                self.assertNotEqual(kwargs["infile"], kwargs["outfile"])
+                pathlib.Path(kwargs["outfile"]).parent.mkdir(parents=True, exist_ok=True)
+                pathlib.Path(kwargs["outfile"]).write_bytes(b"payload-signed")
+
+            with mock.patch.object(sign_tool, "sign_with_osslsigncode", fake_osslsigncode):
+                args = self._args()
+                args.tool = "osslsigncode"
+                args.mode = "sign"
+                args.infile = str(root) + "/sub/../in.txt"
+                args.out = str(target)
+                args.out_dir = ""
+                args.rel_src_manifest = ""
+                args.cert_file = "/fake/cert.p12"
+                args.password_template = ""
+                args.password_env = ""
+                args.identity_template = ""
+                args.stamp_default = []
+                args.info_file = ""
+                args.version_file = ""
+                sign_tool.sign_mode(args)
+
+            self.assertEqual(target.read_bytes(), b"payload-signed")
+
     def test_single_file_mode_writes_a_separate_output_when_asked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -1480,6 +1559,56 @@ class SignToolUnitTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             sign_tool.sign_mode(args)
         self.assertIn("requires --out-dir", str(ctx.exception))
+
+    def test_openssl_config_escapes_values_the_parser_would_reinterpret(self):
+        """Subject values are arbitrary strings, not openssl config syntax."""
+
+        config = sign_tool.build_openssl_config(
+            subject={
+                "common_name": "cn $HOME #1 \\ \"quoted\"",
+                "organization": "Example / Org",
+            },
+            key_usage=["digitalSignature"],
+            extended_key_usage=["codeSigning"],
+            subject_alt_names=["DNS:example.invalid"],
+        )
+
+        # `#` in particular would otherwise start a comment and silently
+        # truncate the subject rather than fail.
+        self.assertIn(
+            "CN = cn \\$HOME \\#1 \\\\ \\\"quoted\\\"",
+            config,
+        )
+
+        # A slash is only special to `-subj`, which is exactly why the config
+        # file is used instead: it needs no escaping here.
+        self.assertIn("O = Example / Org", config)
+        self.assertIn("basicConstraints = critical,CA:FALSE", config)
+        self.assertIn("keyUsage = critical,digitalSignature", config)
+        self.assertIn("extendedKeyUsage = codeSigning", config)
+        self.assertIn("subjectAltName = DNS:example.invalid", config)
+
+        # Fields left unset must not appear at all: an empty DN entry is a
+        # parse error rather than an omitted attribute.
+        self.assertNotIn("OU", config)
+        self.assertNotIn("emailAddress", config)
+
+    def test_openssl_config_rejects_newlines_in_subject_values(self):
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.build_openssl_config(
+                subject={"common_name": "first\nsecond"},
+                key_usage=[],
+                extended_key_usage=[],
+                subject_alt_names=[],
+            )
+        self.assertIn("cannot contain newlines", str(ctx.exception))
+
+    def test_generating_a_certificate_without_openssl_is_actionable(self):
+        args = self._args()
+        args.validity_days = 365
+        with self.assertRaises(SystemExit) as ctx:
+            sign_tool.gen_self_signed_mode(args)
+        self.assertIn("openssl toolchain", str(ctx.exception))
 
 
 if __name__ == "__main__":
