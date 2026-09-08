@@ -109,11 +109,12 @@ def _self_signed_certificate_impl(ctx):
         outputs = [material, cert_out, public_key_out],
         mnemonic = "GenSelfSignedCertificate",
         progress_message = "Generating self-signed certificate for {}".format(ctx.label),
-        # The private key is generated fresh, so it must not be uploaded to a
-        # cache other machines can read. A local cache still keeps the key
-        # stable for the lifetime of the output tree, which is what stops
-        # every build from re-issuing (and thus invalidating) it.
+        # The private key is generated fresh, so the action must never be
+        # cached. In particular, a disk-cached certificate can become days
+        # old before a test sees it, defeating consumers that require a
+        # newly-issued development credential.
         execution_requirements = {
+            "no-cache": "1",
             "no-remote-cache": "1",
             "no-remote-cache-upload": "1",
         },
