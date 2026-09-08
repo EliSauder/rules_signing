@@ -96,6 +96,30 @@ class SelfSignedCertificateTest(unittest.TestCase):
                 self.assertGreater(remaining.days, _ARGS.validity_days - 2)
                 self.assertLessEqual(remaining.days, _ARGS.validity_days)
 
+    def test_certificate_validity_interval_matches_configuration(self):
+        for label, rootpath in (
+            ("pem", _ARGS.pem_certificate),
+            ("p12", _ARGS.p12_certificate),
+        ):
+            with self.subTest(certificate=label):
+                text = self.openssl_x509(
+                    _rlocation(rootpath), "-startdate", "-enddate"
+                )
+                not_before = re.search(
+                    r"^notBefore=(.*)$", text, re.MULTILINE
+                ).group(1)
+                not_after = re.search(r"^notAfter=(.*)$", text, re.MULTILINE).group(1)
+
+                def parse_openssl_date(value):
+                    return datetime.datetime.strptime(
+                        value.replace(" GMT", ""), "%b %d %H:%M:%S %Y"
+                    ).replace(tzinfo=datetime.timezone.utc)
+
+                self.assertEqual(
+                    parse_openssl_date(not_after) - parse_openssl_date(not_before),
+                    datetime.timedelta(days=_ARGS.validity_days),
+                )
+
     def test_certificate_is_usable_for_code_signing(self):
         for label, rootpath in (
             ("pem", _ARGS.pem_certificate),
