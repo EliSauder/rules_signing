@@ -4,6 +4,16 @@ on:
   push: {}
   workflow_call: {}
 
+env:
+  # Upstream ships prebuilt Windows binaries as GitHub release assets (the
+  # OpenBSD CDN carries source tarballs only). Its SHA256 manifest covers just
+  # the tarballs, so the checksum below was taken from the asset itself; it
+  # pins the download against a silent replacement rather than proving
+  # provenance. macOS and Linux take LibreSSL from Homebrew, which verifies
+  # its own bottles.
+  LIBRESSL_WINDOWS_VERSION: "4.3.1"
+  LIBRESSL_WINDOWS_SHA256: "ee638e30165ff195983c6c09e7bf8e1732168f75a7347fb552466fa580d8dd13"
+
 jobs:
   build-and-test:
     strategy:
@@ -11,19 +21,95 @@ jobs:
       matrix:
         bazel_version: ["8.*", "9.*"]
         os: ["ubuntu-latest", "windows-latest", "macos-latest"]
+        # `signing_tools.openssl(path = "openssl")` adopts whichever openssl is
+        # first on PATH, so the implementation under test is a property of the
+        # host rather than of this repository. Apple ships LibreSSL as
+        # /usr/bin/openssl -- which is what BCR's macOS agents resolve, and
+        # which rejects options added in OpenSSL 1.1.1 such as `x509 -ext` --
+        # while the macos-latest runners put Homebrew's OpenSSL 3 ahead of it.
+        # Testing only one of the two leaves the other's breakages to surface
+        # in BCR presubmit instead of here.
+        ssl: ["openssl", "libressl"]
     runs-on: ${{ matrix.os }}
     env:
       USE_BAZEL_VERSION: ${{ matrix.bazel_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      # Homebrew has prebuilt LibreSSL bottles for both macOS and Linux and is
+      # preinstalled on the runners, though the Ubuntu image leaves it off
+      # PATH; setup-homebrew is what exports it. Pinned to an immutable tag
+      # because Homebrew deprecates `@master` references.
+      - name: Set up Homebrew
+        if: matrix.ssl == 'libressl' && runner.os != 'Windows'
+        uses: Homebrew/actions/setup-homebrew@f8d4222eb633e65c2a0157383cf80861fc7fae7f # 2026.09.07.1
+      # libressl is keg-only, so it installs outside the default prefix and its
+      # bin directory has to be exported deliberately -- which is exactly what
+      # makes it shadow the system OpenSSL for the repository rule.
+      - name: Install LibreSSL
+        if: matrix.ssl == 'libressl' && runner.os != 'Windows'
+        run: |
+          brew install libressl
+          echo "$(brew --prefix libressl)/bin" >> "$GITHUB_PATH"
+      # The Windows build is statically linked -- bin/ holds openssl.exe with
+      # no accompanying DLLs -- so extracting it is the whole installation.
+      - name: Install LibreSSL
+        if: matrix.ssl == 'libressl' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:LIBRESSL_WINDOWS_VERSION
+          $url = "https://github.com/libressl/portable/releases/download/v$version/libressl_v${version}_windows_x64.zip"
+          Invoke-WebRequest -Uri $url -OutFile libressl.zip
+          $actual = (Get-FileHash libressl.zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:LIBRESSL_WINDOWS_SHA256) {
+            throw "libressl.zip sha256 $actual does not match the pinned $env:LIBRESSL_WINDOWS_SHA256"
+          }
+          Expand-Archive libressl.zip -DestinationPath "$env:RUNNER_TEMP\libressl"
+          "$env:RUNNER_TEMP\libressl\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Bazel Setup
         uses: bazel-contrib/setup-bazel@0.19.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-${{ matrix.bazel_version }}
+          # `ssl` belongs in the key: sharing a disk cache between the two
+          # implementations would let one's cached actions and test results
+          # satisfy the other, which is the difference the dimension exists
+          # to detect.
+          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-${{ matrix.bazel_version }}-${{ matrix.ssl }}
           repository-cache: true
           cache-save: ${{ github.event_name != 'pull_request' }}
+      # An install step that silently did nothing would leave the runner's
+      # default openssl on PATH and the leg would report a false pass, testing
+      # the same implementation twice. Asserting on PATH alone would not prove
+      # much either: what matters is the binary the repository rule actually
+      # adopted into @signing_openssl, since that is the one every
+      # openssl-dependent action and test invokes. `cquery` reports it without
+      # building anything, so a mismatch fails before the build rather than
+      # after it.
+      - name: Verify the openssl under test
+        shell: bash
+        env:
+          SSL: ${{ matrix.ssl }}
+        run: |
+          set -euo pipefail
+          case "$SSL" in
+            libressl) expected="LibreSSL" ;;
+            openssl) expected="OpenSSL" ;;
+            *) echo "::error::unhandled ssl matrix value '$SSL'"; exit 1 ;;
+          esac
+
+          # Bazel has not populated the execroot symlink farm at analysis time,
+          # so the path is resolved against the output base instead.
+          base="$(bazel info output_base | tr -d '\r')"
+          rel="$(bazel cquery --output=files @signing_openssl//:openssl_file | tr -d '\r')"
+          adopted="$("$base/$rel" version)"
+
+          echo "on PATH:          $(openssl version)"
+          echo "@signing_openssl: $adopted"
+
+          if [ "${adopted#"$expected"}" = "$adopted" ]; then
+            echo "::error::ssl=$SSL expects $expected, but Bazel adopted: $adopted"
+            exit 1
+          fi
       - name: Build
         run: bazel build //... --verbose_failures --sandbox_debug
       - name: Test
