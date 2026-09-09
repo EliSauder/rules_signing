@@ -345,7 +345,7 @@
     },
     "@@rules_signing+//signing:extensions.bzl%signing_tools": {
       "general": {
-        "bzlTransitiveDigest": "VM3bR139Qa2YUluZyWtvQYBfkbwL118P36rzTIGq6BA=",
+        "bzlTransitiveDigest": "NNbJoYbjxlvu1NdHZEVnWxMd2jfgLimNLWPA4YJD9+A=",
         "usagesDigest": "29+rtHLDjqjaOIW60lWdoIJv0kBQaw9dQQetiWuyDrQ=",
         "recordedInputs": [],
         "generatedRepoSpecs": {

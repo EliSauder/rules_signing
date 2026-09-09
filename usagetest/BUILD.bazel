@@ -1,5 +1,6 @@
-load("@rules_signing//signing:defs.bzl", "sign")
 load("@rules_oci//oci:defs.bzl", "oci_image")
+load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_signing//signing:defs.bzl", "sign")
 
 genrule(
     name = "unsigned_outputs",
@@ -34,4 +35,21 @@ oci_image(
 sign(
     name = "signed_oci_image",
     src = ":unsigned_oci_image",
+)
+
+# Runs as part of the BCR presubmit's `test_targets`, so a downstream
+# consumer's `bazel test //...` actually exercises the signed output tree
+# rather than only building it.
+py_test(
+    name = "verify_outputs_test",
+    size = "small",
+    srcs = ["verify_outputs_test.py"],
+    args = ["--signed-outputs=$(rootpath :signed_outputs)"] + select({
+        "@platforms//os:windows": [],
+        "//conditions:default": ["--signed-oci-image=$(rootpath :signed_oci_image)"],
+    }),
+    data = [":signed_outputs"] + select({
+        "@platforms//os:windows": [],
+        "//conditions:default": [":signed_oci_image"],
+    }),
 )
