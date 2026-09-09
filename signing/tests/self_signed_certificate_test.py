@@ -126,11 +126,13 @@ class SelfSignedCertificateTest(unittest.TestCase):
             ("p12", _ARGS.p12_certificate),
         ):
             with self.subTest(certificate=label):
-                text = self.openssl_x509(
-                    _rlocation(rootpath),
-                    "-ext",
-                    "basicConstraints,keyUsage,extendedKeyUsage",
-                )
+                # `-ext` would print just the three extensions of interest, but
+                # it only exists in OpenSSL 1.1.1 and later; macOS ships
+                # LibreSSL, whose `x509` rejects it outright. `-text` is
+                # understood by every implementation and prints the same
+                # extension block, just surrounded by the rest of the
+                # certificate.
+                text = self.openssl_x509(_rlocation(rootpath), "-text")
                 self.assertIn("Code Signing", text)
                 self.assertIn("Digital Signature", text)
 
