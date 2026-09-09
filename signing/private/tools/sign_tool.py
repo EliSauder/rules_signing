@@ -1324,6 +1324,20 @@ def gen_self_signed_mode(args: argparse.Namespace) -> None:
                     subject["common_name"],
                     "-passout",
                     "env:RULES_SIGNING_P12_PASSWORD",
+                    # Explicit, modern PBE ciphers rather than whatever this
+                    # openssl build defaults to: pre-3.0 openssl (e.g. the one
+                    # Debian 11 ships, which the openssl toolchain adopts from
+                    # the host) defaults to the legacy RC2-40-CBC/3DES
+                    # ciphers, which a *consumer* of this file -- such as a
+                    # statically-linked osslsigncode built against OpenSSL 3
+                    # without dynamic provider loading -- may be unable to
+                    # decrypt at all, since it has no way to load the legacy
+                    # provider. AES-256-CBC is understood without it on every
+                    # openssl/LibreSSL version this rule set supports.
+                    "-certpbe",
+                    "AES-256-CBC",
+                    "-keypbe",
+                    "AES-256-CBC",
                     "-out",
                     args.out,
                 ],
@@ -1342,16 +1356,21 @@ def gen_self_signed_mode(args: argparse.Namespace) -> None:
             pathlib.Path(args.cert_out).write_bytes(cert_path.read_bytes())
         if args.public_key_out:
             ensure_parent(args.public_key_out)
-            run_cmd([
+            # `-out` is not honored here on every openssl build: some (e.g.
+            # the LibreSSL-derived openssl Apple ships on macOS, which this
+            # toolchain adopts from the host) always write the `-pubkey`
+            # output to stdout regardless of `-out`, silently leaving the
+            # destination file missing. Capturing stdout and writing it
+            # ourselves works the same way on every implementation.
+            pubkey = run_cmd_capture([
                 args.openssl_tool,
                 "x509",
                 "-in",
                 str(cert_path),
                 "-pubkey",
                 "-noout",
-                "-out",
-                args.public_key_out,
             ])
+            pathlib.Path(args.public_key_out).write_text(pubkey, encoding="utf-8")
 
 
 def sign_mode(args: argparse.Namespace) -> None:
