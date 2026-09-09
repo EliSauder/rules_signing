@@ -85,12 +85,38 @@ jobs:
       # openssl-dependent action and test invokes. `cquery` reports it without
       # building anything, so a mismatch fails before the build rather than
       # after it.
+      # A step running with `shell: bash` on Windows gets Git Bash, whose MSYS2
+      # runtime prepends its own bin directories to the inherited PATH. Git for
+      # Windows bundles an OpenSSL build, so `openssl` in such a step resolves
+      # to Git's copy ahead of both the runner image's OpenSSL and anything
+      # exported through GITHUB_PATH -- the LibreSSL install below it would be
+      # invisible. PowerShell sees the real Windows PATH, with GITHUB_PATH
+      # entries in front, so resolving the directory there and prepending it
+      # explicitly in the bash step is what makes the installed choice stick.
+      - name: Resolve the openssl under test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = (Get-Command openssl -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          "SSL_BIN_DIR=$(Split-Path -Parent $exe)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Resolve the openssl under test
+        if: runner.os != 'Windows'
+        run: echo "SSL_BIN_DIR=$(dirname "$(command -v openssl)")" >> "$GITHUB_ENV"
       - name: Verify the openssl under test
         shell: bash
         env:
           SSL: ${{ matrix.ssl }}
         run: |
           set -euo pipefail
+
+          # PATH is list-separated by ':' here, so a Windows path has to be
+          # converted before it can be prepended.
+          dir="$SSL_BIN_DIR"
+          if command -v cygpath >/dev/null 2>&1; then
+            dir="$(cygpath -u "$dir")"
+          fi
+          export PATH="$dir:$PATH"
+
           case "$SSL" in
             libressl) expected="LibreSSL" ;;
             openssl) expected="OpenSSL" ;;
