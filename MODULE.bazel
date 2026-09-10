@@ -94,7 +94,7 @@ pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
     hub_name = "signing_pypi",
     python_version = PYTHON_VERSION,
-    requirements_lock = "//signing/private/tools:requirements.txt",
+    requirements_lock = "//signing/private/tools:requirements_lock.txt",
 )
 use_repo(pip, "signing_pypi")
 
@@ -109,7 +109,7 @@ pip_tests = use_extension(
 pip_tests.parse(
     hub_name = "signing_tests_pypi",
     python_version = PYTHON_VERSION,
-    requirements_lock = "//signing/tests/testdata_certs:requirements.txt",
+    requirements_lock = "//signing/tests/testdata_certs:requirements_lock.txt",
 )
 use_repo(pip_tests, "signing_tests_pypi")
 

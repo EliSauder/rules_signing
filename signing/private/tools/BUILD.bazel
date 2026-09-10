@@ -6,7 +6,7 @@ package(default_visibility = ["//visibility:public"])
 compile_pip_requirements(
     name = "requirements",
     src = "requirements.txt",
-    requirements_txt = "requirements_lock_txt",
+    requirements_txt = "requirements_lock.txt",
 )
 
 py_library(
