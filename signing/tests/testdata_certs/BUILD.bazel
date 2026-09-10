@@ -6,7 +6,7 @@ package(default_visibility = ["//signing/tests:__subpackages__"])
 compile_pip_requirements(
     name = "requirements",
     src = "requirements.txt",
-    requirements_txt = "requirements_lock_txt",
+    requirements_txt = "requirements_lock.txt",
 )
 
 # Throwaway self-signed development certificates. See README.md: the private
