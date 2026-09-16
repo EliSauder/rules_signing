@@ -115,9 +115,23 @@ class SelfSignedCertificateTest(unittest.TestCase):
                         value.replace(" GMT", ""), "%b %d %H:%M:%S %Y"
                     ).replace(tzinfo=datetime.timezone.utc)
 
-                self.assertEqual(
-                    parse_openssl_date(not_after) - parse_openssl_date(not_before),
+                # Not an exact equality, because `openssl req -x509 -days N`
+                # reads the clock twice -- once to stamp notBefore, once to
+                # offset notAfter from a second reading -- so an interval of
+                # exactly N days only holds when both land in the same second.
+                # Crossing a second boundary between them yields N days plus
+                # one second, which is what this asserted away as a failure
+                # until a macOS runner happened to cross one.
+                #
+                # The tolerance is deliberately far smaller than a day: what
+                # is being checked is that `validity_days` reached openssl at
+                # all rather than being ignored or defaulted, and any such
+                # mistake is off by days, not seconds.
+                interval = parse_openssl_date(not_after) - parse_openssl_date(not_before)
+                self.assertAlmostEqual(
+                    interval,
                     datetime.timedelta(days=_ARGS.validity_days),
+                    delta=datetime.timedelta(seconds=5),
                 )
 
     def test_certificate_is_usable_for_code_signing(self):

@@ -43,19 +43,27 @@ _OSSLSIGNCODE_EXT = (
 
 _CODESIGN_EXT = (".app", ".pkg", ".dmg")
 
+_JARSIGNER_EXT = (".jar",)
+
 # The signers that embed a signature into the artifact itself, as opposed to
 # cosign, which only ever produces a signature beside it.
-NATIVE_TOOLS = ("osslsigncode", "codesign")
+NATIVE_TOOLS = ("osslsigncode", "codesign", "jarsigner")
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 
 
 def sniff_binary_format(path: str) -> str:
     """Identifies Mach-O/PE binaries by content, returning a tool name or "".
 
+    Only for files found inside a directory artifact. Declared files are
+    classified while the build graph is built, from the rule that produces
+    them, because their outputs have to be declared before they exist. A
+    tree's contents have no such declaration to belong to, so they are the one
+    thing left that has to be recognised by looking.
+
     Executables frequently ship without an extension (the norm for Mach-O on
-    macOS), so the filename is not a reliable signal. LIEF parses the actual
-    headers, which also avoids misreading look-alike magic numbers such as
-    Java class files sharing 0xCAFEBABE with universal Mach-O binaries.
+    macOS), so the filename is not a reliable signal there. LIEF parses the
+    actual headers, which also avoids misreading look-alike magic numbers such
+    as Java class files sharing 0xCAFEBABE with universal Mach-O binaries.
     """
 
     if not os.path.exists(path) or os.path.isdir(path):
@@ -76,6 +84,8 @@ def detect_tool(path: str, infile: Optional[str] = None) -> str:
         return "osslsigncode"
     if p.endswith(_CODESIGN_EXT):
         return "codesign"
+    if p.endswith(_JARSIGNER_EXT):
+        return "jarsigner"
     if infile:
         sniffed = sniff_binary_format(infile)
         if sniffed:
@@ -326,17 +336,44 @@ def is_cosign_private_key(path: str) -> bool:
     return b"SIGSTORE PRIVATE KEY" in head
 
 
-def pkcs12_to_pem(cert_path: str, password: str, tmpdir: str, openssl: str = "") -> str:
-    """Converts PKCS#12 signing material to the unified PEM cosign requires.
+def pkcs12_to_pem(
+    cert_path: str,
+    password: str,
+    tmpdir: str,
+    openssl: str = "",
+    include_certs: bool = False,
+) -> str:
+    """Converts PKCS#12 signing material to a PEM cosign or jarsigner needs.
 
     cosign only reads PEM, so a PKCS#12 certificate that works with the other
-    two signers would otherwise be unusable here. openssl is an optional
-    toolchain rather than a hard dependency, because most builds never need
-    this conversion; when it is absent the caller is told exactly how to
-    proceed instead of failing with a cryptic error from cosign.
+    signers would otherwise be unusable here; jarsigner needs a PKCS#12
+    keystore of its own, which is easiest to build from a PEM regardless of
+    what format the material started in (see `jarsigner_keystore`). openssl
+    is an optional toolchain rather than a hard dependency, because most
+    builds never need this conversion; when it is absent the caller is told
+    exactly how to proceed instead of failing with a cryptic error from
+    whichever signer needed it.
+
+    Args:
+        include_certs: cosign's trust model is a bare public key rather than
+            an X.509 chain, and it reads the first PEM block in the file, so
+            its conversion extracts only the private key (leaving this
+            False). jarsigner needs both halves to build a keystore, so its
+            call passes True instead.
     """
 
     if not openssl:
+        if include_certs:
+            raise ValueError(
+                "sign_tool: jarsigner signs through a PKCS#12 keystore " +
+                "built from this certificate, and building one from PKCS#12 " +
+                "material ({}) needs openssl. Either supply a PEM ".format(cert_path) +
+                "certificate (private key and certificate in one file) via " +
+                "certificate_file, or register the optional openssl " +
+                "toolchain so the keystore can be built during the build. " +
+                "See the 'Signing with a single certificate' section of " +
+                "the rules_signing README."
+            )
         raise ValueError(
             "sign_tool: cosign requires PEM signing material but the "
             "certificate is PKCS#12 ({}). Either supply a PEM certificate "
@@ -347,7 +384,8 @@ def pkcs12_to_pem(cert_path: str, password: str, tmpdir: str, openssl: str = "")
             .format(cert_path)
         )
 
-    out = pathlib.Path(tmpdir) / "cert-from-p12.pem"
+    name = "cert-and-key-from-p12.pem" if include_certs else "cert-from-p12.pem"
+    out = pathlib.Path(tmpdir) / name
     env = dict(os.environ)
     env["RULES_SIGNING_P12_PASSWORD"] = password
     cmd = [
@@ -356,16 +394,14 @@ def pkcs12_to_pem(cert_path: str, password: str, tmpdir: str, openssl: str = "")
         "-in",
         cert_path,
         "-nodes",
-        # Only the private key is extracted. cosign's trust model is a bare
-        # public key rather than an X.509 chain, so it ignores certificates --
-        # and it reads the first PEM block in the file, which would be a
-        # certificate rather than the key if they were included.
-        "-nocerts",
         "-passin",
         "env:RULES_SIGNING_P12_PASSWORD",
         "-out",
         str(out),
     ]
+    if not include_certs:
+        # Only the private key is extracted; see the `include_certs` doc.
+        cmd.append("-nocerts")
     try:
         run_cmd(cmd, env=env)
     except subprocess.CalledProcessError:
@@ -552,9 +588,12 @@ _PUBLIC_REKOR_URL = "https://rekor.sigstore.dev"
 # What `timestamp_url = "default"` resolves to. rcodesign documents Apple's
 # server as its own default; osslsigncode has no built-in default, so the
 # most widely used public Authenticode timestamp authority stands in for one.
+# jarsigner has no built-in default either, and the same DigiCert server
+# happily timestamps jar signatures too, so it does double duty here.
 _DEFAULT_TIMESTAMP_URLS = {
     "codesign": "http://timestamp.apple.com/ts01",
     "osslsigncode": "http://timestamp.digicert.com",
+    "jarsigner": "http://timestamp.digicert.com",
 }
 
 
@@ -910,6 +949,123 @@ def sign_with_codesign(
     run_cmd(cmd)
 
 
+# The keystore entry alias every jarsigner keystore this tool builds uses.
+# jarsigner needs an alias to know which keystore entry to sign with, and a
+# fixed one this project controls means the original certificate material's
+# own alias (a PKCS#12's, or a PEM's, since PEM has none at all) never has to
+# be recovered.
+_JARSIGNER_ALIAS = "rules-signing"
+
+
+def jarsigner_keystore(
+    cert_path: str,
+    password: str,
+    tmpdir: str,
+    openssl: str = "",
+    ca_path: str = "",
+) -> str:
+    """Builds the PKCS#12 keystore `sign_with_jarsigner` signs through.
+
+    jarsigner is the odd one out among the signers here in the same way
+    cosign is: it never reads a bare certificate/key pair, only a keystore.
+    Whatever material rules_signing was given -- a unified PEM or an existing
+    PKCS#12 -- is (re-)packaged into a fresh keystore under `_JARSIGNER_ALIAS`
+    here, cached for the lifetime of `tmpdir` so signing many jars in one
+    invocation builds it only once. `ca_path`, if given, is folded into the
+    same keystore as extra chain certificates, since a PKCS#12's chain is
+    what jarsigner embeds in the signature block -- there is no separate
+    "extra certificates" flag the way osslsigncode has `-ac`.
+    """
+
+    keystore = pathlib.Path(tmpdir) / "jarsigner-keystore.p12"
+    if keystore.is_file():
+        return str(keystore)
+
+    pem_path = cert_path
+    if not is_pem_certificate(cert_path):
+        pem_path = pkcs12_to_pem(cert_path, password, tmpdir, openssl, include_certs=True)
+
+    if not openssl:
+        raise ValueError(
+            "sign_tool: jarsigner signs through a PKCS#12 keystore built "
+            "here with openssl. Register the optional openssl toolchain so "
+            "it can be built during the build. See the 'Signing with a "
+            "single certificate' section of the rules_signing README."
+        )
+
+    env = dict(os.environ)
+    env["RULES_SIGNING_JARSIGNER_PASSWORD"] = password
+    cmd = [
+        openssl,
+        "pkcs12",
+        "-export",
+        "-in",
+        pem_path,
+        "-inkey",
+        pem_path,
+        "-name",
+        _JARSIGNER_ALIAS,
+        "-passout",
+        "env:RULES_SIGNING_JARSIGNER_PASSWORD",
+        "-out",
+        str(keystore),
+    ]
+    if ca_path:
+        # Appends the issuing chain as additional certificates in the
+        # keystore entry, so a verifier can build a path to the root without
+        # having to source the intermediates itself -- the same guarantee
+        # `-ac`/rcodesign's extra-certificates option gives the other two
+        # native signers.
+        cmd.extend(["-certfile", ca_path])
+    run_cmd(cmd, env=env)
+    return str(keystore)
+
+
+def sign_with_jarsigner(
+    *,
+    tool: str,
+    infile: str,
+    outfile: str,
+    timestamp_url: str,
+    cert_path: Optional[str],
+    password: str,
+    tmpdir: str,
+    openssl: str = "",
+    ca_path: str = "",
+) -> None:
+    """Sign a `.jar` in place with jarsigner, embedding the signature in it."""
+
+    if not tool:
+        raise ValueError(
+            "sign_tool: jarsigner tool path is required; register a JDK "
+            "toolchain that ships one, for example rules_java's "
+            "\"@rules_java//toolchains:all\""
+        )
+
+    if not cert_path:
+        passthrough(infile, outfile)
+        return
+
+    ensure_parent(outfile)
+    keystore = jarsigner_keystore(cert_path, password, tmpdir, openssl, ca_path)
+    cmd = [
+        tool,
+        "-keystore",
+        keystore,
+        "-storetype",
+        "PKCS12",
+        "-storepass",
+        password,
+        "-signedjar",
+        outfile,
+    ]
+    timestamp_url = resolve_timestamp_url(timestamp_url, "jarsigner")
+    if timestamp_url:
+        cmd.extend(["-tsa", timestamp_url])
+    cmd.extend([infile, _JARSIGNER_ALIAS])
+    run_cmd(cmd)
+
+
 def sign_file(
     *,
     selected: str,
@@ -945,6 +1101,18 @@ def sign_file(
             cert_path=cert_path,
             password=password,
             identity=identity,
+        )
+    elif selected == "jarsigner":
+        sign_with_jarsigner(
+            tool=args.jarsigner_tool,
+            infile=infile,
+            outfile=outfile,
+            timestamp_url=args.timestamp_url,
+            ca_path=args.ca_file,
+            cert_path=cert_path,
+            password=password,
+            tmpdir=tmpdir,
+            openssl=args.openssl_tool,
         )
     elif selected == "cosign":
         sign_blob_with_cosign(
@@ -1034,24 +1202,6 @@ def sign_directory(
             identity=identity,
         )
 
-def native_tool_available(kind: str, args: argparse.Namespace) -> bool:
-    """Whether the signer for `kind` can actually be run in this build.
-
-    The native toolchains are optional, and a build that registered none of
-    them still signs everything cosign signs. The tool paths are therefore
-    checked rather than assumed, so reading a file's header can only ever add
-    a native signature the build is actually equipped to produce.
-    """
-
-    tool = {
-        "osslsigncode": args.osslsigncode_tool,
-        "codesign": args.codesign_tool,
-    }.get(kind, "")
-    if not tool:
-        return False
-    return os.path.exists(tool) or shutil.which(tool) is not None
-
-
 def sign_one(
     *,
     tool_mode: str,
@@ -1124,16 +1274,16 @@ def plan_signature(
 ) -> tuple:
     """Works out what to sign `infile` with: `(native signer, detached?)`.
 
-    `signer` is what analysis routed this file to and declared outputs for, so
-    it is what decides the shape. An empty one means nothing declared anything
-    -- the file was found inside a directory artifact, where the choice is
-    made here.
+    `signer` is what analysis routed this file to and declared outputs for,
+    and it is final: the rule that builds a file already said whether it is a
+    native binary, and for what platform, so there is nothing left for this
+    to work out and no second opinion worth having. Each file is signed once,
+    by one signer.
 
-    Under `--tool auto` the header is read for any file no native signer was
-    pinned for, because a Mach-O or PE binary can hide behind any name, and a
-    binary that is found is signed natively too. That is additive on purpose:
-    it changes what a file is signed with, never which files exist, which is
-    what lets its outputs be declared as files.
+    An empty `signer` means nothing declared anything, which happens only for
+    files found by walking a directory artifact. A directory's contents are
+    the one thing analysis genuinely cannot see, so those -- and only those --
+    are still classified from the file itself.
 
     `--detached-signatures` then answers the detached question outright,
     rather than leaving it to follow from the file's name.
@@ -1143,9 +1293,14 @@ def plan_signature(
         native = signer
         routed_to_cosign = False
     elif signer == "cosign":
-        native = sniff_native_format(infile, args) if tool_mode == "auto" else ""
+        native = ""
         routed_to_cosign = True
     else:
+        # No signer was pinned, so this file came out of a directory artifact
+        # rather than out of the caller's declarations. Its contents were not
+        # available when the build graph was built -- nothing inside a
+        # directory is -- so this is the one place the file itself still has
+        # to be consulted.
         selected = tool_mode if tool_mode != "auto" else detect_tool(relpath, infile)
         native = selected if selected in NATIVE_TOOLS else ""
         routed_to_cosign = selected == "cosign"
@@ -1159,15 +1314,6 @@ def plan_signature(
         detached = routed_to_cosign
 
     return native, detached
-
-
-def sniff_native_format(infile: str, args: argparse.Namespace) -> str:
-    """The native signer for `infile`'s header, if one can be run here."""
-
-    native = sniff_binary_format(infile)
-    if native and native_tool_available(native, args):
-        return native
-    return ""
 
 
 def apply_signature_plan(
@@ -1650,7 +1796,7 @@ def main() -> None:
         default="",
         help="read additional arguments, one per line, from this UTF-8 file",
     )
-    parser.add_argument("--tool", choices=("auto", "osslsigncode", "codesign", "cosign"), default="auto")
+    parser.add_argument("--tool", choices=("auto", "osslsigncode", "codesign", "cosign", "jarsigner"), default="auto")
     parser.add_argument(
         "--detached-signatures",
         choices=("auto", "always", "never"),
@@ -1678,6 +1824,7 @@ def main() -> None:
     parser.add_argument("--cosign-tool", default="")
     parser.add_argument("--openssl-tool", default="")
     parser.add_argument("--codesign-tool", default="codesign")
+    parser.add_argument("--jarsigner-tool", default="jarsigner")
     parser.add_argument(
         "--timestamp-url",
         default="",
