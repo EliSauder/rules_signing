@@ -126,6 +126,39 @@ class SignOutputShapeTest(unittest.TestCase):
             },
         )
 
+    def test_always_gives_every_source_the_same_shape(self) -> None:
+        """`detached_signatures = "always"` makes the name stop mattering.
+
+        A `.exe` and a `.txt` are routed to different signers and would
+        otherwise produce different output sets. Asking for a detached
+        signature on everything is what makes the two identical, which is the
+        point of the mode: a consumer can then predict a target's outputs from
+        its sources alone.
+        """
+
+        self.assert_outputs(
+            "always",
+            {
+                "signing/tests/hello.exe": _SIDECARS,
+                "signing/tests/testdata_sign/docs/readme.txt": _SIDECARS,
+            },
+        )
+
+    def test_never_leaves_only_what_a_signer_embeds(self) -> None:
+        """The opposite end, and also uniform: sources and nothing else.
+
+        The `.exe` still carries its embedded signature; the `.txt`, which no
+        native signer claims, is simply copied.
+        """
+
+        self.assert_outputs(
+            "never",
+            {
+                "signing/tests/hello.exe": (),
+                "signing/tests/testdata_sign/docs/readme.txt": (),
+            },
+        )
+
     def test_a_directory_source_stays_one_directory(self) -> None:
         """Its contents are the action's to decide, so it is a tree artifact."""
 

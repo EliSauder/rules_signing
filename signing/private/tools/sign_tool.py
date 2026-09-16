@@ -42,6 +42,10 @@ _OSSLSIGNCODE_EXT = (
 )
 
 _CODESIGN_EXT = (".app", ".pkg", ".dmg")
+
+# The signers that embed a signature into the artifact itself, as opposed to
+# cosign, which only ever produces a signature beside it.
+NATIVE_TOOLS = ("osslsigncode", "codesign")
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 
 
@@ -1067,6 +1071,9 @@ def sign_one(
     outputs for, so this cannot produce a different set of files than the one
     it was asked for. Without it the signer is chosen here, which is the case
     when walking a directory whose contents are nobody's declaration.
+
+    See `plan_signature` for how that choice, the `--tool` mode and
+    `--detached-signatures` combine.
     """
 
     if pathlib.Path(infile).is_dir():
@@ -1087,29 +1094,16 @@ def sign_one(
         )
         return
 
-    if signer == "cosign":
-        sign_blob_and_maybe_native(
-            tool_mode=tool_mode,
-            infile=infile,
-            outfile=outfile,
-            args=args,
-            tmpdir=tmpdir,
-            cert_path=cert_path,
-            password=password,
-            identity=identity,
-        )
-        return
-
-    selected = signer or tool_mode
-    if selected == "auto":
-        # Pass the real path so extensionless Mach-O/PE binaries are detected
-        # from their header rather than falling through to a detached signature.
-        selected = detect_tool(relpath, infile)
-    if not selected:
-        selected = "cosign"
-
-    sign_file(
-        selected=selected,
+    native, detached = plan_signature(
+        signer=signer,
+        tool_mode=tool_mode,
+        relpath=relpath,
+        infile=infile,
+        args=args,
+    )
+    apply_signature_plan(
+        native=native,
+        detached=detached,
         infile=infile,
         outfile=outfile,
         args=args,
@@ -1120,9 +1114,66 @@ def sign_one(
     )
 
 
-def sign_blob_and_maybe_native(
+def plan_signature(
     *,
+    signer: str,
     tool_mode: str,
+    relpath: str,
+    infile: str,
+    args: argparse.Namespace,
+) -> tuple:
+    """Works out what to sign `infile` with: `(native signer, detached?)`.
+
+    `signer` is what analysis routed this file to and declared outputs for, so
+    it is what decides the shape. An empty one means nothing declared anything
+    -- the file was found inside a directory artifact, where the choice is
+    made here.
+
+    Under `--tool auto` the header is read for any file no native signer was
+    pinned for, because a Mach-O or PE binary can hide behind any name, and a
+    binary that is found is signed natively too. That is additive on purpose:
+    it changes what a file is signed with, never which files exist, which is
+    what lets its outputs be declared as files.
+
+    `--detached-signatures` then answers the detached question outright,
+    rather than leaving it to follow from the file's name.
+    """
+
+    if signer in NATIVE_TOOLS:
+        native = signer
+        routed_to_cosign = False
+    elif signer == "cosign":
+        native = sniff_native_format(infile, args) if tool_mode == "auto" else ""
+        routed_to_cosign = True
+    else:
+        selected = tool_mode if tool_mode != "auto" else detect_tool(relpath, infile)
+        native = selected if selected in NATIVE_TOOLS else ""
+        routed_to_cosign = selected == "cosign"
+
+    policy = getattr(args, "detached_signatures", "") or "auto"
+    if policy == "always":
+        detached = True
+    elif policy == "never":
+        detached = False
+    else:
+        detached = routed_to_cosign
+
+    return native, detached
+
+
+def sniff_native_format(infile: str, args: argparse.Namespace) -> str:
+    """The native signer for `infile`'s header, if one can be run here."""
+
+    native = sniff_binary_format(infile)
+    if native and native_tool_available(native, args):
+        return native
+    return ""
+
+
+def apply_signature_plan(
+    *,
+    native: str,
+    detached: bool,
     infile: str,
     outfile: str,
     args: argparse.Namespace,
@@ -1131,35 +1182,32 @@ def sign_blob_and_maybe_native(
     identity: str,
     tmpdir: str = "",
 ) -> None:
-    """Signs a file whose caller declared detached-signature outputs for it.
+    """Carries out a `plan_signature` result.
 
-    A name that names no native format is all analysis has to go on, so such
-    files are routed to cosign there. Under `--tool auto` the header is still
-    read here, because a Mach-O or PE binary can hide behind any name, and a
-    binary that is found gets its native signature too: applied first, with
-    the detached signature then taken over the signed result.
-
-    The native signature is therefore additive. Reading the header changes
-    what a file is signed with, never which files exist, which is what lets
-    these outputs be declared files rather than a directory whose contents
-    only become known now.
+    The native signature is applied first so the detached one is taken over
+    the file as it will be delivered, signed contents included. Verifying the
+    detached signature against the artifact therefore succeeds, which it would
+    not if the bytes were signed before the native signer rewrote them.
     """
 
     source = infile
-    if tool_mode == "auto":
-        native = sniff_binary_format(infile)
-        if native and native_tool_available(native, args):
-            sign_file(
-                selected=native,
-                infile=infile,
-                outfile=outfile,
-                args=args,
-                tmpdir=tmpdir,
-                cert_path=cert_path,
-                password=password,
-                identity=identity,
-            )
-            source = outfile
+    if native:
+        sign_file(
+            selected=native,
+            infile=infile,
+            outfile=outfile,
+            args=args,
+            tmpdir=tmpdir,
+            cert_path=cert_path,
+            password=password,
+            identity=identity,
+        )
+        source = outfile
+
+    if not detached:
+        if not native:
+            passthrough(infile, outfile)
+        return
 
     if getattr(args, "require_detached_signatures", False) and not cert_path:
         raise SystemExit(
@@ -1603,6 +1651,15 @@ def main() -> None:
         help="read additional arguments, one per line, from this UTF-8 file",
     )
     parser.add_argument("--tool", choices=("auto", "osslsigncode", "codesign", "cosign"), default="auto")
+    parser.add_argument(
+        "--detached-signatures",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help=(
+            "which files get a detached signature: the ones no native signer "
+            "claims (auto), every file (always), or none (never)"
+        ),
+    )
     parser.add_argument("--in", dest="infile", default="")
     parser.add_argument("--out", default="")
     parser.add_argument("--out-dir", default="")

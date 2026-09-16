@@ -32,7 +32,9 @@ sign = rule(
           "Each source keeps its own shape: a file is signed into a file and " +
           "a directory into a directory, both under their source-relative " +
           "path. Sources signed with a detached signature (cosign) are " +
-          "accompanied by their `.sig` and `.bundle.json` files.",
+          "accompanied by their `.sig` and `.bundle.json` files, which " +
+          "`detached_signatures` can extend to every source or turn off " +
+          "entirely.",
     attrs = dict({
         "src": attr.label(
             mandatory = True,

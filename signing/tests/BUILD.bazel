@@ -437,6 +437,55 @@ sign(
     certificate = ":dev_cert_cosign",
 )
 
+# One source a native signer claims and one it does not, so that
+# `detached_signatures` is observed doing the thing it exists for: making the
+# output set the same for both of them.
+filegroup(
+    name = "pe_and_blob",
+    srcs = [
+        "testdata_sign/docs/readme.txt",
+        ":hello_exe",
+    ],
+)
+
+# Every source gets a detached signature. The PE is still signed natively as
+# well, so it carries both, and the detached signature is taken over the PE as
+# it is delivered -- signature included -- which sign_verify_test checks by
+# verifying each of them against the same output file.
+sign(
+    name = "signed_always_detached",
+    src = ":pe_and_blob",
+    certificate = ":dev_cert_shared",
+    detached_signatures = "always",
+)
+
+# No source gets one, leaving only what a native signer embeds. The text file
+# has no native signer, so it is copied through unsigned.
+sign(
+    name = "signed_never_detached",
+    src = ":pe_and_blob",
+    certificate = ":dev_cert_shared",
+    detached_signatures = "never",
+)
+
+pick_file(
+    name = "signed_always_detached_exe",
+    src = ":signed_always_detached",
+    suffix = "signing/tests/hello.exe",
+)
+
+pick_file(
+    name = "signed_always_detached_readme",
+    src = ":signed_always_detached",
+    suffix = "docs/readme.txt",
+)
+
+pick_file(
+    name = "signed_never_detached_exe",
+    src = ":signed_never_detached",
+    suffix = "signing/tests/hello.exe",
+)
+
 sign(
     name = "signed_real_oci_image",
     src = ":unsigned_oci_image",
@@ -679,7 +728,15 @@ py_test(
         "--shared-root=$(rootpath //signing/tests/testdata_certs:shared_root.crt)",
         "--shared-public-key=$(rootpath //signing/tests/testdata_certs:shared.pub)",
         "--shared-pe=$(rootpath :signed_shared_pe)",
+        # Both `detached_signatures` modes still embed the PE signature, and
+        # under "always" the detached one is taken over the PE as delivered,
+        # so verifying it against that same file is what proves the two were
+        # applied in an order that leaves both valid.
+        "--shared-pe=$(rootpath :signed_always_detached_exe)",
+        "--shared-pe=$(rootpath :signed_never_detached_exe)",
         "--shared-macho=$(rootpath :signed_shared_macho)",
+        "--shared-blob=$(rootpath :signed_always_detached_exe)",
+        "--shared-blob=$(rootpath :signed_always_detached_readme)",
         "--shared-blob=$(rootpath :signed_shared_blobs_readme)",
         "--shared-blob=$(rootpath :signed_shared_blobs_from_p12_readme)",
     ] + select({
@@ -696,6 +753,11 @@ py_test(
         ":signed_real_blobs_guide",
         ":signed_real_blobs_readme",
         ":signed_real_macho_p12",
+        ":signed_always_detached",
+        ":signed_always_detached_exe",
+        ":signed_always_detached_readme",
+        ":signed_never_detached",
+        ":signed_never_detached_exe",
         ":signed_real_macho_pem",
         ":signed_real_pe_base64",
         ":signed_real_pe_detected",
@@ -747,6 +809,16 @@ file_name_manifest(
     srcs = [":signed_real_blob_tree"],
 )
 
+file_name_manifest(
+    name = "signed_always_detached_outputs",
+    srcs = [":signed_always_detached"],
+)
+
+file_name_manifest(
+    name = "signed_never_detached_outputs",
+    srcs = [":signed_never_detached"],
+)
+
 py_test(
     name = "sign_output_shape_test",
     size = "small",
@@ -766,10 +838,18 @@ py_test(
         "signing/tests/signed_default.signed",
         "--case=tree::$(rootpath :signed_real_blob_tree_outputs)::" +
         "signing/tests",
+        "--case=always::$(rootpath :signed_always_detached_outputs)::" +
+        "signing/tests/signed_always_detached.signed",
+        "--case=never::$(rootpath :signed_never_detached_outputs)::" +
+        "signing/tests/signed_never_detached.signed",
     ],
     data = [
+        ":signed_always_detached",
+        ":signed_always_detached_outputs",
         ":signed_default",
         ":signed_default_outputs",
+        ":signed_never_detached",
+        ":signed_never_detached_outputs",
         ":signed_real_blob_tree",
         ":signed_real_blob_tree_outputs",
         ":signed_real_blobs",

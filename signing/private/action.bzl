@@ -86,11 +86,34 @@ def _has_known_extension(src):
     basename = p.rpartition("/")[2]
     return "." in basename
 
-def _needs_toolchain(srcs, selected_tool, tool_kind, require):
+DETACHED_SIGNATURE_MODES = ["auto", "always", "never"]
+
+def _wants_detached(signer, detached_signatures):
+    """Whether `signer`'s source gets a detached signature under this policy.
+
+    Under `"auto"` the answer follows the routing: a source no native signer
+    claims is signed by cosign, which is detached, and one a native signer
+    does claim has its signature embedded instead. The other two modes answer
+    the same way for every source, which is the point of them -- the output
+    shape stops depending on what the source is called.
+    """
+    if detached_signatures == "always":
+        return True
+    if detached_signatures == "never":
+        return False
+    return signer == "cosign"
+
+def _needs_toolchain(srcs, selected_tool, tool_kind, require, detached_signatures = "auto"):
     if tool_kind in require:
         return True
     if selected_tool == tool_kind:
         return True
+
+    # Every file gets a detached signature, so cosign signs even the sources a
+    # native signer already claimed.
+    if tool_kind == "cosign" and detached_signatures == "always":
+        for f in srcs:
+            return True
     if selected_tool != "auto":
         return False
 
@@ -115,7 +138,13 @@ def _needs_toolchain(srcs, selected_tool, tool_kind, require):
             return True
     return False
 
-def _needs_toolchain_reason(srcs, selected_tool, tool_kind, require, require_reason):
+def _needs_toolchain_reason(
+        srcs,
+        selected_tool,
+        tool_kind,
+        require,
+        require_reason,
+        detached_signatures = "auto"):
     """Explains why `tool_kind` was required, for the failure message.
 
     With an explicit `tool` the answer is trivial, but under `auto` the
@@ -129,6 +158,12 @@ def _needs_toolchain_reason(srcs, selected_tool, tool_kind, require, require_rea
         return "this rule always signs with {}".format(tool_kind)
     if selected_tool == tool_kind:
         return "`tool = \"{}\"` was requested".format(tool_kind)
+
+    if tool_kind == "cosign" and detached_signatures == "always":
+        return (
+            "`detached_signatures = \"always\"` gives every file a `.sig` " +
+            "and `.bundle.json`, which cosign produces"
+        )
 
     for f in srcs:
         if f.is_directory:
@@ -182,6 +217,7 @@ def signing_context(
         require = [],
         require_reason = "",
         tool = None,
+        detached_signatures = None,
         name = None,
         attr_prefix = "signing_"):
     """Resolves signing toolchains and certificate material for `ctx`.
@@ -207,6 +243,7 @@ def signing_context(
         tool: overrides the `tool` attribute. Rules that only ever produce one
             kind of artifact can pin the signer here instead of exposing the
             choice.
+        detached_signatures: overrides the `detached_signatures` attribute.
         name: base name for the generated parameter file. Defaults to the
             target name. Pass distinct values if one target builds more than
             one signing context.
@@ -233,6 +270,7 @@ def signing_context(
           `password_env`, if set). The caller must make sure these reach the
           action, typically with `--action_env`.
         * `tool_mode`: the resolved value of `tool`.
+        * `detached_signatures`: the resolved value of `detached_signatures`.
     """
     def attr(name):
         full = attr_prefix + name
@@ -269,6 +307,27 @@ def signing_context(
             repr(tool_mode),
             ", ".join(TOOL_KINDS + ["auto"]),
         ))
+
+    detached_mode = (
+        detached_signatures if detached_signatures != None else attr("detached_signatures")
+    )
+    if detached_mode not in DETACHED_SIGNATURE_MODES:
+        fail("rules_signing: unknown detached_signatures {}; expected one of {}".format(
+            repr(detached_mode),
+            ", ".join(DETACHED_SIGNATURE_MODES),
+        ))
+
+    # cosign signs nothing but detached signatures, so turning them off leaves
+    # it with nothing to do -- every file would simply be copied, which is
+    # unlikely to be what a target that explicitly asked for cosign wants.
+    if tool_mode == "cosign" and detached_mode == "never":
+        fail(
+            "rules_signing: `tool = \"cosign\"` signs by producing a detached " +
+            "signature, but `detached_signatures = \"never\"` forbids one, so " +
+            "this target would only copy its sources.\n" +
+            "Drop `detached_signatures`, or drop `certificate` if unsigned " +
+            "copies are what you want.",
+        )
     for kind in require:
         if kind not in TOOL_KINDS:
             fail("rules_signing: unknown tool kind {} in `require`; expected one of {}".format(
@@ -295,6 +354,7 @@ def signing_context(
 
     args.add("--mode", "sign")
     args.add("--tool", tool_mode)
+    args.add("--detached-signatures", detached_mode)
 
     inputs = []
     sign_tool = getattr(ctx.executable, "_" + attr_prefix + "sign_tool")
@@ -306,7 +366,13 @@ def signing_context(
         ("codesign", CODESIGN_TOOLCHAIN),
     ]:
         tool_file = _toolchain_tool(ctx, toolchain_type)
-        if tool_file == None and _needs_toolchain(srcs, tool_mode, kind, require):
+        if tool_file == None and _needs_toolchain(
+            srcs,
+            tool_mode,
+            kind,
+            require,
+            detached_mode,
+        ):
             if ctx.toolchains[toolchain_type] != None:
                 fail(
                     "rules_signing: the {} toolchain is resolved but does ".format(kind) +
@@ -314,7 +380,14 @@ def signing_context(
                 )
             _fail_missing_toolchain(
                 kind,
-                _needs_toolchain_reason(srcs, tool_mode, kind, require, require_reason),
+                _needs_toolchain_reason(
+                    srcs,
+                    tool_mode,
+                    kind,
+                    require,
+                    require_reason,
+                    detached_mode,
+                ),
                 tool_mode,
             )
         if tool_file:
@@ -374,6 +447,7 @@ def signing_context(
         env = {"RUNFILES_DIR": sign_tool.path + ".runfiles"},
         required_env_vars = [cert.password_env] if cert and cert.password_env else [],
         tool_mode = tool_mode,
+        detached_signatures = detached_mode,
     )
 
 def signing_argv(
@@ -501,6 +575,7 @@ def signed_outputs(
         srcs,
         out_name = None,
         tool = None,
+        detached_signatures = None,
         attr_prefix = "signing_"):
     """Declares one output artifact per source, plus cosign's sidecar files.
 
@@ -524,12 +599,20 @@ def signed_outputs(
     signature in addition to the detached one rather than instead of it, so it
     changes what a file is signed with, never which files exist.
 
+    `detached_signatures` overrides the routing question for every source at
+    once: `"always"` gives each of them a `.sig` and `.bundle.json` whatever
+    its name, so the output shape stops depending on the sources entirely, and
+    `"never"` gives none of them any, leaving only the signatures native
+    signers embed.
+
     Args:
         ctx: the rule context.
         srcs: the Files to sign.
         out_name: directory the outputs are placed under, relative to the
             package. Defaults to `<target name>.signed`.
         tool: overrides the `tool` attribute, for rules that pin the signer.
+        detached_signatures: overrides the `detached_signatures` attribute,
+            which decides which sources get `.sig`/`.bundle.json` files.
         attr_prefix: the prefix the signing attributes were declared with.
 
     Returns:
@@ -547,6 +630,12 @@ def signed_outputs(
           and so have to be produced.
     """
     tool_mode = tool if tool != None else getattr(ctx.attr, attr_prefix + "tool")
+    detached_mode = (
+        detached_signatures if detached_signatures != None else getattr(
+            ctx.attr,
+            attr_prefix + "detached_signatures",
+        )
+    )
     name = out_name if out_name else "{}.signed".format(ctx.label.name)
 
     # A lone directory is the whole output, so its contents sit at the root
@@ -558,6 +647,20 @@ def signed_outputs(
     # `certificate` attribute). There is then no detached signature to declare.
     cert = cert_info(ctx, attr_name = attr_prefix + "certificate")
     has_cert = cert != None and cert.certificate != None
+
+    # `"always"` is a promise about every output this target has, and a `.sig`
+    # cannot be promised without something to sign with. Copying files through
+    # unsigned stays available -- it is just no longer something this mode can
+    # fall into silently.
+    if detached_mode == "always" and not has_cert:
+        fail(
+            "rules_signing: `detached_signatures = \"always\"` gives every " +
+            "source a `.sig` and `.bundle.json`, but no certificate is " +
+            "configured on this target, so there is nothing to sign them " +
+            "with.\n" +
+            "Set `certificate`, or drop `detached_signatures` to sign " +
+            "whatever material happens to resolve.",
+        )
 
     files = []
     signed = []
@@ -607,7 +710,7 @@ def signed_outputs(
         # Without signing material cosign copies the file through unsigned,
         # which is deliberate (see the `certificate` attribute), and there is
         # then no detached signature to declare.
-        if signer == "cosign" and has_cert:
+        if _wants_detached(signer, detached_mode) and has_cert:
             require_detached = True
             for suffix in _COSIGN_SIDECAR_SUFFIXES:
                 claim(
@@ -773,6 +876,23 @@ def signing_attrs(prefix = "signing_"):
                   "because the contents that decide the signer are not " +
                   "known until the action runs. Naming a single tool " +
                   "explicitly requests only that toolchain.",
+        ),
+        p + "detached_signatures": attr.string(
+            default = "auto",
+            values = DETACHED_SIGNATURE_MODES,
+            doc = "Which sources get the `.sig` and `.bundle.json` files a " +
+                  "detached signature consists of. \"auto\" (the default) " +
+                  "gives them to the sources no native signer claims, since " +
+                  "a detached signature is the only kind they can have, and " +
+                  "leaves natively signed artifacts to carry their signature " +
+                  "embedded. \"always\" gives every source both, so the " +
+                  "outputs of this target stop depending on what its sources " +
+                  "are called, at the cost of a cosign invocation per file " +
+                  "and a second signature to distribute keys and " +
+                  "verification instructions for; it requires a certificate. " +
+                  "\"never\" emits neither, leaving only the signatures " +
+                  "native signers embed and copying through anything that " +
+                  "has no native signer.",
         ),
         p + "certificate": attr.label(
             providers = [[SigningCertificateInfo]],
