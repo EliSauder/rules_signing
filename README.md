@@ -8,14 +8,14 @@
 - Preserve source output layout (relative paths), with one output artifact per
   source: a file is signed into a file, a directory into a directory. Only a
   detached signature adds files, and only the ones it consists of.
-- Auto-select signer by file extension, then by file contents:
+- Auto-select signer from the file's extension, or from the rule that produces it:
   - `osslsigncode`: `.exe`, `.dll`, `.msi`, `.sys`, and related Windows script/package extensions.
   - `codesign`: `.app`, `.pkg`, `.dmg`.
   - `cosign sign-blob`: all other file types, producing colocated `.sig` and `.bundle.json` files.
-- Detect extensionless executables by parsing their headers with
-  [LIEF](https://lief.re/), so a Mach-O binary (which normally has no extension
-  on macOS) or an extensionless PE still reaches its native signer instead of
-  falling back to a detached signature. An explicit extension always wins.
+- Recognise extensionless native binaries without reading them, by asking which
+  rule builds the file and which platform it is built for — so a `cc_binary`
+  cross-compiled to Windows reaches `osslsigncode` even though it is called
+  `hello`. See [How a signer is chosen](#how-a-signer-is-chosen).
 - Sign `rules_oci` `oci_image` outputs as OCI layouts (no registry push during build).
 - Preserve the original file alongside any detached signature outputs.
 - Preserve upstream runfiles on wrapped targets (including `oci_image` runfiles).
@@ -76,15 +76,18 @@ lazily and fails with an actionable message naming the missing registration if
 an input requires a signer you have not registered.
 
 **Directory artifacts require every signer to be registered.** Which signer an
-individual file needs is decided from its extension or its header bytes, and
-the contents of a directory artifact (an `oci_image` layout, a `.app` bundle,
-or any other tree artifact) do not exist yet at analysis time. `tool = "auto"`
+individual file needs is decided while the build graph is built, and the
+contents of a directory artifact (an `oci_image` layout, a `.app` bundle, or
+any other tree artifact) do not exist yet at that point. `tool = "auto"`
 therefore has to assume a tree may hold anything — nested `.exe`/`.dll` files
 needing `osslsigncode`, or Mach-O binaries and `.app`/`.dmg`/`.pkg` bundles
 needing `codesign` — and requires **all** signing toolchains, including
 `codesign.bzl`, even when nothing in the tree turns out to be an Apple
-artifact. The same applies to extensionless files, which are classified by
-sniffing their headers while the action runs.
+artifact.
+
+Individual files do not have this problem. A file's signer is known exactly, so
+only the toolchains actually selected are requested: signing a single
+`cc_binary` built for Linux asks for cosign and nothing else.
 
 If you do not want to register signers you will never use, name the one you
 need explicitly and no other toolchain is requested:
@@ -146,15 +149,80 @@ the signed artifact is the whole output:
 | `notes.md` | cosign | `notes.md`, `notes.md.sig`, `notes.md.bundle.json` |
 | `some_dir/` | per file, inside | `some_dir/` |
 
-Which signer a source is routed to is decided when the build graph is built,
-from `tool` and the source's name — the native signers for the extensions they
-own, cosign for everything else, extensionless files included. Under
-`tool = "auto"` the file's header is then read while the action runs, which is
-how a Mach-O or PE binary is recognised behind a name that never said so. That
-binary is signed natively **in addition to** the detached signature, never
-instead of it: reading the header changes what a file is signed with, not
-which files exist. Without it (an explicit `tool`, or a file that is not a
-native binary) the detached signature stands alone.
+### How a signer is chosen
+
+Every signer decision is made while the build graph is built, never while the
+action runs. It has to be: a detached signature is *extra files*, and a rule's
+outputs have to be declared before anything is built, so "which signer" and
+"which outputs" are the same question and both are answered up front. Each file
+is therefore signed exactly once, by one signer, with outputs that are known
+before the build starts.
+
+Under `tool = "auto"` a file is routed by two pieces of evidence:
+
+1. **The rule that produces it.** A file built by a rule known to produce
+   native binaries is a native binary. Which *format* comes from the
+   configuration that rule was analysed in — a binary is a PE because it was
+   built for Windows, not because it starts with `MZ` — so a cross-compiled
+   binary is classified correctly even though the target doing the signing is
+   built for something else.
+2. **Its name**, for files no rule spoke for: prebuilt artifacts committed to
+   the repository, downloads, `genrule` output. This is also the only
+   possible evidence for the formats Authenticode defines *by file type* --
+   PowerShell and JavaScript scripts, `.msi` and `.cab` installers, `.cat`
+   catalogs, `.dmg`/`.pkg` images -- since no compiler emits those, so no
+   rule kind can describe them.
+
+**The order matters, and it is strict.** A rule in the table speaks for its
+outputs conclusively, including when what it says is that they are *not*
+native binaries. A name is never allowed to overrule it. `native_binary` is
+why: it names its output `<name>.exe` on every platform, Linux included, so a
+name consulted afterwards would hand an ordinary ELF to osslsigncode.
+
+Anything neither step answers for gets a detached cosign signature. That
+includes a prebuilt binary with no extension, which cannot be distinguished
+from any other opaque blob without opening it — name it with `tool` if it
+needs native signing.
+
+An explicit `tool` skips both steps and is used as given.
+
+#### Teaching it about a ruleset
+
+The rules that produce native binaries are listed in
+[`signing/private/binary_kinds.bzl`](signing/private/binary_kinds.bzl), one row
+per rule, keyed by the rule's name as a string:
+
+```starlark
+RULE_KINDS = {
+    "cc_binary": executable(),           # the rule's executable output
+    "cc_shared_library": all_outputs(),  # every output is a native library
+    "csharp_library": all_outputs(format = PE),  # PE on every platform
+    "_copy_file": forward("src"),        # bytes come from another target
+    "py_binary": not_native("a bootstrap script"),
+}
+```
+
+Because the keys are strings, adding a ruleset costs nothing to builds that do
+not use it — the table names `go_binary` without `rules_go` being in the module
+graph, and has no dependencies of its own to keep in sync. It currently covers
+rules_cc, rules_go, rules_rust, rules_swift, rules_apple, rules_dotnet,
+rules_zig, rules_d, rules_haskell, bazel_skylib and aspect_bazel_lib.
+
+A rule that is absent produces nothing signable, which is the right answer for
+`py_binary`, `sh_binary` and every other launcher script. `not_native()` rows
+record that an omission was a decision rather than an oversight.
+
+`forward` is what keeps copies, renames and platform wrappers transparent: a
+binary does not stop being a binary for having been copied, so a `cc_binary`
+behind a platform transition behind a copy is still recognised. Forwarding
+matches by `File` identity where it can — which is exact, and is why one
+binary in a `filegroup` full of data files is still found — and falls back to
+pairing in order only for rules that mint new `File`s.
+
+A rule can also answer for itself, instead of being described from the outside,
+by returning a `BinaryFormatInfo` mapping its own `File`s to `"pe"` or
+`"macho"`. The aspect leaves any rule that does so alone. See
+[`signing/tests/cross.bzl`](signing/tests/cross.bzl) for a worked example.
 
 ### Choosing which files get a detached signature
 
@@ -194,7 +262,7 @@ single source can be referenced directly — `$(rootpath :signed_installer)` is
 the signed installer. A target that wraps several has several outputs, so use
 `$(rootpaths ...)`, or `filegroup`/`select` on what you need.
 
-For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs. A directory's contents are only known when the action runs, so nothing inside it is declared file by file and the same freedom applies as before. Note that with `tool = "auto"` any directory artifact requires every signing toolchain to be registered — see [Setup](#setup).
+For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`) and, for files with no extension, by parsing their headers with [LIEF](https://lief.re/). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs. Files inside a tree are the one place headers are still read: a tree's contents do not exist until the action runs, so nothing inside it can be classified from its producing rule, and nothing inside it is declared file by file either — which is what makes reading them safe there and not elsewhere. Note that with `tool = "auto"` any directory artifact requires every signing toolchain to be registered — see [Setup](#setup).
 
 ### Stamping
 

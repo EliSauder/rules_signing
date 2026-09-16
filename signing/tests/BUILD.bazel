@@ -16,6 +16,7 @@ load(
     "DEV_SHARED_P12_BASE64",
 )
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@bazel_skylib//rules:native_binary.bzl", "native_binary")
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image")
@@ -311,11 +312,32 @@ sign(
     url = SIGNED_URL,
 )
 
-# No `tool`, so the extensionless binary has to be routed to osslsigncode by
-# sniffing its PE header.
+# No `tool`, so the extensionless binary has to be routed to osslsigncode on
+# the strength of the rule that builds it.
 sign(
     name = "signed_real_pe_detected",
     src = ":hello_pe",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+# One grouping rule holding a binary and a text file, to pin that detection
+# carries through a filegroup and reaches only the file it is true of. The
+# group is where a whole-target answer would show up as a wrong one: classify
+# by position and the odd file out shifts the binary's verdict onto it, or
+# loses both.
+filegroup(
+    name = "mixed_group",
+    srcs = [
+        ":hello_pe",
+        "testdata_sign/docs/nested/guide.txt",
+    ],
+)
+
+sign(
+    name = "signed_mixed_group",
+    src = ":mixed_group",
     certificate = ":dev_cert_generic_pem",
     description = SIGNED_DESCRIPTION,
     url = SIGNED_URL,
@@ -805,6 +827,11 @@ file_name_manifest(
 )
 
 file_name_manifest(
+    name = "signed_mixed_group_outputs",
+    srcs = [":signed_mixed_group"],
+)
+
+file_name_manifest(
     name = "signed_real_blob_tree_outputs",
     srcs = [":signed_real_blob_tree"],
 )
@@ -834,6 +861,10 @@ py_test(
         "signing/tests/signed_real_blobs.signed",
         "--case=detected::$(rootpath :signed_real_pe_detected_outputs)::" +
         "signing/tests/signed_real_pe_detected.signed",
+        "--case=mixed_group::$(rootpath :signed_mixed_group_outputs)::" +
+        "signing/tests/signed_mixed_group.signed",
+        "--case=elf_named_exe::$(rootpath :signed_elf_named_exe_outputs)::" +
+        "signing/tests/signed_elf_named_exe.signed",
         "--case=unsigned::$(rootpath :signed_default_outputs)::" +
         "signing/tests/signed_default.signed",
         "--case=tree::$(rootpath :signed_real_blob_tree_outputs)::" +
@@ -852,6 +883,10 @@ py_test(
         ":signed_never_detached_outputs",
         ":signed_real_blob_tree",
         ":signed_real_blob_tree_outputs",
+        ":signed_elf_named_exe",
+        ":signed_elf_named_exe_outputs",
+        ":signed_mixed_group",
+        ":signed_mixed_group_outputs",
         ":signed_real_blobs",
         ":signed_real_blobs_outputs",
         ":signed_real_pe_detected",
@@ -1043,4 +1078,35 @@ py_test(
         ":signed_awkward_names_passthrough_outputs",
     ],
     deps = ["@rules_python//python/runfiles"],
+)
+
+# An ELF called ".exe", which is what `native_binary` actually produces on
+# Linux: it names its output `<name>.exe` on every platform, saying so in its
+# own docs. The name is therefore the rule author's convention and not a fact
+# about the bytes, and a signer chosen from it would hand a Linux ELF to
+# osslsigncode. The platform is pinned rather than taken from the host so the
+# expectation holds wherever the suite runs.
+platform_binary(
+    name = "hello_elf",
+    binary = ":hello",
+    platform = "@zig_sdk//platform:linux_amd64",
+)
+
+native_binary(
+    name = "elf_named_exe",
+    src = ":hello_elf",
+    out = "elf_named_exe.exe",
+)
+
+sign(
+    name = "signed_elf_named_exe",
+    src = ":elf_named_exe",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+file_name_manifest(
+    name = "signed_elf_named_exe_outputs",
+    srcs = [":signed_elf_named_exe"],
 )

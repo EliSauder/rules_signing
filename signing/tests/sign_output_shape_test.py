@@ -101,17 +101,55 @@ class SignOutputShapeTest(unittest.TestCase):
             },
         )
 
-    def test_extensionless_sources_are_shaped_like_any_other(self) -> None:
-        """A name with no extension is not a special case of the output set.
+    def test_an_extensionless_binary_is_recognised_without_its_name(self) -> None:
+        """Nothing in this file's name says it is a PE. It is signed as one.
 
-        Which signer runs on this file is only settled when its header is
-        read, at execution time, and it turns out to be a PE. That cannot
-        change what the target produces, so the file is shaped by the same
-        rule as a `.md` or a `.txt`: cosign's, because nothing in the name
-        says otherwise. The PE signature is applied to the file as well.
+        The name is not what was consulted: the rule that builds this file
+        reported it as a Windows binary while the build graph was being
+        built, so it was routed to osslsigncode there. The signature is
+        embedded, which is why the file is the entire output -- no `.sig`
+        accompanies it, and nothing had to be read at execution time to
+        establish that.
         """
 
-        self.assert_outputs("detected", {"signing/tests/hello_pe": _SIDECARS})
+        self.assert_outputs("detected", {"signing/tests/hello_pe": ()})
+
+    def test_detection_reaches_one_file_in_a_group_and_not_its_neighbour(
+        self,
+    ) -> None:
+        """Two files, one filegroup, two different answers.
+
+        Detection is per file, not per target. The binary is classified from
+        the rule that builds it and signed in place; the text file beside it
+        is left to cosign and gains sidecars. A grouping rule is where a
+        whole-target answer would be visibly wrong -- the group itself builds
+        nothing, so the only correct verdict is the one each file brought
+        with it.
+        """
+
+        self.assert_outputs(
+            "mixed_group",
+            {
+                "signing/tests/hello_pe": (),
+                "signing/tests/testdata_sign/docs/nested/guide.txt": _SIDECARS,
+            },
+        )
+
+    def test_a_name_a_rule_invented_does_not_decide_the_signer(self) -> None:
+        """An ELF called `.exe` is not signed as a Windows PE.
+
+        `native_binary` names its output `<name>.exe` on every platform, so
+        the extension here is its author's convention and not a fact about
+        the bytes. The rule that built the binary targeted Linux, which has
+        no native signature format, and that verdict stands rather than being
+        overruled by the name -- so the file gets a detached signature and
+        osslsigncode is never reached.
+        """
+
+        self.assert_outputs(
+            "elf_named_exe",
+            {"signing/tests/elf_named_exe.exe": _SIDECARS},
+        )
 
     def test_without_signing_material_only_the_sources_come_back(self) -> None:
         """No certificate means no signature, and so no files to declare."""

@@ -52,10 +52,16 @@ _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 def sniff_binary_format(path: str) -> str:
     """Identifies Mach-O/PE binaries by content, returning a tool name or "".
 
+    Only for files found inside a directory artifact. Declared files are
+    classified while the build graph is built, from the rule that produces
+    them, because their outputs have to be declared before they exist. A
+    tree's contents have no such declaration to belong to, so they are the one
+    thing left that has to be recognised by looking.
+
     Executables frequently ship without an extension (the norm for Mach-O on
-    macOS), so the filename is not a reliable signal. LIEF parses the actual
-    headers, which also avoids misreading look-alike magic numbers such as
-    Java class files sharing 0xCAFEBABE with universal Mach-O binaries.
+    macOS), so the filename is not a reliable signal there. LIEF parses the
+    actual headers, which also avoids misreading look-alike magic numbers such
+    as Java class files sharing 0xCAFEBABE with universal Mach-O binaries.
     """
 
     if not os.path.exists(path) or os.path.isdir(path):
@@ -1034,24 +1040,6 @@ def sign_directory(
             identity=identity,
         )
 
-def native_tool_available(kind: str, args: argparse.Namespace) -> bool:
-    """Whether the signer for `kind` can actually be run in this build.
-
-    The native toolchains are optional, and a build that registered none of
-    them still signs everything cosign signs. The tool paths are therefore
-    checked rather than assumed, so reading a file's header can only ever add
-    a native signature the build is actually equipped to produce.
-    """
-
-    tool = {
-        "osslsigncode": args.osslsigncode_tool,
-        "codesign": args.codesign_tool,
-    }.get(kind, "")
-    if not tool:
-        return False
-    return os.path.exists(tool) or shutil.which(tool) is not None
-
-
 def sign_one(
     *,
     tool_mode: str,
@@ -1124,16 +1112,16 @@ def plan_signature(
 ) -> tuple:
     """Works out what to sign `infile` with: `(native signer, detached?)`.
 
-    `signer` is what analysis routed this file to and declared outputs for, so
-    it is what decides the shape. An empty one means nothing declared anything
-    -- the file was found inside a directory artifact, where the choice is
-    made here.
+    `signer` is what analysis routed this file to and declared outputs for,
+    and it is final: the rule that builds a file already said whether it is a
+    native binary, and for what platform, so there is nothing left for this
+    to work out and no second opinion worth having. Each file is signed once,
+    by one signer.
 
-    Under `--tool auto` the header is read for any file no native signer was
-    pinned for, because a Mach-O or PE binary can hide behind any name, and a
-    binary that is found is signed natively too. That is additive on purpose:
-    it changes what a file is signed with, never which files exist, which is
-    what lets its outputs be declared as files.
+    An empty `signer` means nothing declared anything, which happens only for
+    files found by walking a directory artifact. A directory's contents are
+    the one thing analysis genuinely cannot see, so those -- and only those --
+    are still classified from the file itself.
 
     `--detached-signatures` then answers the detached question outright,
     rather than leaving it to follow from the file's name.
@@ -1143,9 +1131,14 @@ def plan_signature(
         native = signer
         routed_to_cosign = False
     elif signer == "cosign":
-        native = sniff_native_format(infile, args) if tool_mode == "auto" else ""
+        native = ""
         routed_to_cosign = True
     else:
+        # No signer was pinned, so this file came out of a directory artifact
+        # rather than out of the caller's declarations. Its contents were not
+        # available when the build graph was built -- nothing inside a
+        # directory is -- so this is the one place the file itself still has
+        # to be consulted.
         selected = tool_mode if tool_mode != "auto" else detect_tool(relpath, infile)
         native = selected if selected in NATIVE_TOOLS else ""
         routed_to_cosign = selected == "cosign"
@@ -1159,15 +1152,6 @@ def plan_signature(
         detached = routed_to_cosign
 
     return native, detached
-
-
-def sniff_native_format(infile: str, args: argparse.Namespace) -> str:
-    """The native signer for `infile`'s header, if one can be run here."""
-
-    native = sniff_binary_format(infile)
-    if native and native_tool_available(native, args):
-        return native
-    return ""
 
 
 def apply_signature_plan(

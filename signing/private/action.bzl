@@ -18,6 +18,7 @@ Everything such a rule needs is exposed here:
 """
 
 load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS", "maybe_stamp")
+load("//signing/private:binary_kinds.bzl", "MACHO", "PE")
 load(
     "//signing/private:common.bzl",
     "add_cert_args",
@@ -66,7 +67,40 @@ _REGISTRATION = {
     "codesign": "\"@codesign.bzl//toolchain:all\"",
 }
 
-def _detect_tool(src):
+_FORMAT_SIGNERS = {
+    PE: "osslsigncode",
+    MACHO: "codesign",
+}
+
+def _detect_tool(src, formats = {}):
+    """The signer for `src`, decided entirely at analysis time.
+
+    Two kinds of evidence, and the order between them is the point.
+
+    1. The rule that produces the file, via `binary_format_aspect`. A rule
+       that is in the table speaks for its outputs conclusively, including
+       when what it has to say is that they are *not* native binaries. That
+       verdict is final and step 2 is not reached.
+
+    2. The file's name, for files no rule spoke for: prebuilts committed to
+       the repository, downloads, anything a `genrule` emitted. Also the only
+       possible evidence for the formats Authenticode defines by file type --
+       PowerShell and JavaScript scripts, `.msi` and `.cab` installers,
+       `.cat` catalogs, `.dmg`/`.pkg` images -- since no compiler emits those
+       and so no rule kind can describe them.
+
+    Letting step 1 lose to step 2 is how a `native_binary` wrapping a Linux
+    ELF gets signed as a Windows PE: it names its output `<name>.exe` on
+    every platform. Hence NOT_NATIVE, which is a rule saying "no" rather than
+    a rule saying nothing.
+
+    Anything still unaccounted for is signed with a detached signature, which
+    is the one option that works on a file whose contents are unknown.
+    """
+    fmt = formats.get(src)
+    if fmt != None:
+        return _FORMAT_SIGNERS.get(fmt, "cosign")
+
     p = src.short_path.lower()
     for ext in _OSSLSIGNCODE_EXT:
         if p.endswith(ext):
@@ -75,16 +109,6 @@ def _detect_tool(src):
         if p.endswith(ext):
             return "codesign"
     return "cosign"
-
-def _has_known_extension(src):
-    p = src.short_path.lower()
-    for ext in _OSSLSIGNCODE_EXT + _CODESIGN_EXT:
-        if p.endswith(ext):
-            return True
-
-    # A basename with no dot cannot be classified by extension at all.
-    basename = p.rpartition("/")[2]
-    return "." in basename
 
 DETACHED_SIGNATURE_MODES = ["auto", "always", "never"]
 
@@ -103,7 +127,13 @@ def _wants_detached(signer, detached_signatures):
         return False
     return signer == "cosign"
 
-def _needs_toolchain(srcs, selected_tool, tool_kind, require, detached_signatures = "auto"):
+def _needs_toolchain(
+        srcs,
+        selected_tool,
+        tool_kind,
+        require,
+        detached_signatures = "auto",
+        formats = {}):
     if tool_kind in require:
         return True
     if selected_tool == tool_kind:
@@ -117,9 +147,6 @@ def _needs_toolchain(srcs, selected_tool, tool_kind, require, detached_signature
     if selected_tool != "auto":
         return False
 
-    # For cosign, require the toolchain only if at least one input would be
-    # routed to cosign (unknown extensions) or requires runtime detection.
-
     for f in srcs:
         # Directory artifact contents are only available at execution time, so
         # require every native signer: an ordinary directory may hold nested
@@ -128,13 +155,12 @@ def _needs_toolchain(srcs, selected_tool, tool_kind, require, detached_signature
         if f.is_directory:
             return True
 
-        # Extensionless files are classified by sniffing their header at
-        # execution time, which analysis cannot do, so both native signers must
-        # be available. This is common for Mach-O binaries on macOS.
-        if not _has_known_extension(f):
-            return True
-
-        if _detect_tool(f) == tool_kind:
+        # Every file is classified during analysis, so only the toolchains
+        # actually selected are asked for. A file whose producing rule is
+        # unknown to detection and whose name says nothing is signed with a
+        # detached signature rather than forcing every toolchain to be
+        # registered against the chance that it turns out to be a binary.
+        if _detect_tool(f, formats) == tool_kind:
             return True
     return False
 
@@ -144,13 +170,14 @@ def _needs_toolchain_reason(
         tool_kind,
         require,
         require_reason,
-        detached_signatures = "auto"):
+        detached_signatures = "auto",
+        formats = {}):
     """Explains why `tool_kind` was required, for the failure message.
 
     With an explicit `tool` the answer is trivial, but under `auto` the
-    requirement usually comes from an input whose signer cannot be known until
-    the action runs, which is otherwise a confusing thing to be asked to
-    register a toolchain for.
+    requirement usually comes from a particular input, which is worth naming
+    rather than leaving the reader to work out which of their sources asked
+    for a toolchain they have not registered.
     """
     if tool_kind in require:
         if require_reason:
@@ -172,11 +199,22 @@ def _needs_toolchain_reason(
                 "contents are only known when the action runs, so every " +
                 "signer must be available"
             )
-        if not _has_known_extension(f):
-            return (
-                "`tool = \"auto\"` and '{}' has no recognizable ".format(f.short_path) +
-                "extension, so it is classified by its header bytes at " +
-                "execution time and every signer must be available"
+        if _detect_tool(f, formats) == tool_kind:
+            if formats.get(f):
+                return (
+                    "'{}' is built as a {} binary".format(
+                        f.short_path,
+                        "Windows PE" if formats[f] == PE else "Mach-O",
+                    )
+                )
+            if f in formats:
+                return (
+                    "'{}' is built by a rule that produces no natively ".format(f.short_path) +
+                    "signable binary, so it gets a detached signature"
+                )
+            return "'{}' is signed with {} because of its name".format(
+                f.short_path,
+                tool_kind,
             )
 
     return "`tool = \"auto\"` and at least one input is signed with it"
@@ -218,6 +256,7 @@ def signing_context(
         require_reason = "",
         tool = None,
         detached_signatures = None,
+        formats = {},
         name = None,
         attr_prefix = "signing_"):
     """Resolves signing toolchains and certificate material for `ctx`.
@@ -244,6 +283,10 @@ def signing_context(
             kind of artifact can pin the signer here instead of exposing the
             choice.
         detached_signatures: overrides the `detached_signatures` attribute.
+        formats: `File` to binary-format mapping from `binary_formats()`,
+            naming the sources that are native binaries. Sources absent from
+            it are classified by name instead, so passing nothing is valid
+            and simply means no rule vouched for anything.
         name: base name for the generated parameter file. Defaults to the
             target name. Pass distinct values if one target builds more than
             one signing context.
@@ -372,6 +415,7 @@ def signing_context(
             kind,
             require,
             detached_mode,
+            formats,
         ):
             if ctx.toolchains[toolchain_type] != None:
                 fail(
@@ -387,6 +431,7 @@ def signing_context(
                     require,
                     require_reason,
                     detached_mode,
+                    formats,
                 ),
                 tool_mode,
             )
@@ -576,6 +621,7 @@ def signed_outputs(
         out_name = None,
         tool = None,
         detached_signatures = None,
+        formats = {},
         attr_prefix = "signing_"):
     """Declares one output artifact per source, plus cosign's sidecar files.
 
@@ -585,19 +631,18 @@ def signed_outputs(
     cosign additionally get the `.sig` and `.bundle.json` files that a
     detached signature consists of.
 
-    Which signer each source is routed to is decided here, from the `tool`
-    attribute and the source's name, by exactly the rule that names them: one
-    of the native signers for the extensions they own, and cosign for
-    everything else -- extensionless files included, since a name that carries
-    no extension carries no evidence of a native format either. The choice is
-    recorded in the manifest and the action is bound to it, so the files that
-    appear are always the files declared here.
+    Which signer each source is routed to is decided here, and entirely from
+    what analysis knows: first the rule that builds the file, which reports
+    whether it is a native binary and in which format, and failing that the
+    source's name, for files no rule vouched for. The choice is recorded in
+    the manifest and the action is bound to it, so the files that appear are
+    always the files declared here, and each source is signed exactly once.
 
-    That leaves the header sniffing `tool = "auto"` does at execution time
-    free to do what analysis genuinely cannot, which is recognise a Mach-O or
-    PE binary behind a name that never said so. It applies the native
-    signature in addition to the detached one rather than instead of it, so it
-    changes what a file is signed with, never which files exist.
+    Nothing is re-decided at execution time. A file that reaches a native
+    signer has its signature embedded and needs no sidecar; one that does not
+    gets a detached signature and no embedded one. Because the signer is
+    settled before the build, those two facts can be declared together
+    instead of one of them being discovered too late to affect the other.
 
     `detached_signatures` overrides the routing question for every source at
     once: `"always"` gives each of them a `.sig` and `.bundle.json` whatever
@@ -613,6 +658,7 @@ def signed_outputs(
         tool: overrides the `tool` attribute, for rules that pin the signer.
         detached_signatures: overrides the `detached_signatures` attribute,
             which decides which sources get `.sig`/`.bundle.json` files.
+        formats: `File` to binary-format mapping from `binary_formats()`.
         attr_prefix: the prefix the signing attributes were declared with.
 
     Returns:
@@ -699,7 +745,7 @@ def signed_outputs(
             signed.append(out)
             continue
 
-        signer = tool_mode if tool_mode != "auto" else _detect_tool(src)
+        signer = tool_mode if tool_mode != "auto" else _detect_tool(src, formats)
         signers[src.path] = signer
 
         claim(relpath, src, "")
@@ -750,6 +796,7 @@ def sign_action(
         out_dir = None,
         outs = None,
         sctx = None,
+        formats = {},
         mnemonic = "SignTree",
         progress_message = None,
         attr_prefix = "signing_",
@@ -771,6 +818,8 @@ def sign_action(
         out_dir: a directory artifact from `ctx.actions.declare_directory`.
         outs: the struct returned by `signed_outputs`.
         sctx: a `signing_context` to reuse; one is created if omitted.
+        formats: `File` to binary-format mapping from `binary_formats()`.
+            Ignored when `sctx` is supplied, which already resolved them.
         mnemonic: action mnemonic.
         progress_message: action progress message.
         attr_prefix: the prefix the signing attributes were declared with.
@@ -784,7 +833,12 @@ def sign_action(
         fail("rules_signing: sign_action needs exactly one of `out_dir` or `outs`")
 
     if sctx == None:
-        sctx = signing_context(ctx, srcs = srcs, attr_prefix = attr_prefix)
+        sctx = signing_context(
+            ctx,
+            srcs = srcs,
+            formats = formats,
+            attr_prefix = attr_prefix,
+        )
 
     if outs != None:
         manifest = rel_src_manifest(
@@ -869,13 +923,14 @@ def signing_attrs(prefix = "signing_"):
             default = "auto",
             values = TOOL_KINDS + ["auto"],
             doc = "Which signer to use, or \"auto\" (the default) to select " +
-                  "one per file from its extension and, failing that, its " +
-                  "header bytes. Note that \"auto\" requires every signing " +
-                  "toolchain to be registered whenever an input is a " +
-                  "directory artifact or has no recognizable extension, " +
-                  "because the contents that decide the signer are not " +
-                  "known until the action runs. Naming a single tool " +
-                  "explicitly requests only that toolchain.",
+                  "one per file: from the rule that builds it where that is " +
+                  "known, and otherwise from its extension. Note that " +
+                  "\"auto\" requires every signing toolchain to be " +
+                  "registered whenever an input is a directory artifact, " +
+                  "because a tree's contents are not known until the action " +
+                  "runs. Individual files request only the toolchains they " +
+                  "actually select. Naming a single tool explicitly " +
+                  "requests only that toolchain.",
         ),
         p + "detached_signatures": attr.string(
             default = "auto",
