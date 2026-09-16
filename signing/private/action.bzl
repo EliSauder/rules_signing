@@ -18,6 +18,7 @@ Everything such a rule needs is exposed here:
 """
 
 load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS", "maybe_stamp")
+load("//signing/private:binary_kinds.bzl", "JAR", "MACHO", "PE")
 load(
     "//signing/private:common.bzl",
     "add_cert_args",
@@ -30,7 +31,13 @@ COSIGN_TOOLCHAIN = "//signing/toolchains:cosign_toolchain_type"
 CODESIGN_TOOLCHAIN = "@codesign.bzl//toolchain:toolchain_type"
 OPENSSL_TOOLCHAIN = "//signing/toolchains:openssl_toolchain_type"
 
-TOOL_KINDS = ["osslsigncode", "codesign", "cosign"]
+# jarsigner ships inside every JDK, so it is resolved through rules_java's own
+# runtime toolchain (the one `@bazel_tools//tools/jdk:runtime_toolchain_type`
+# points at, and which Bazel registers a default for out of the box) instead
+# of a toolchain this project defines and consumers must register themselves.
+JARSIGNER_TOOLCHAIN = "@bazel_tools//tools/jdk:runtime_toolchain_type"
+
+TOOL_KINDS = ["osslsigncode", "codesign", "cosign", "jarsigner"]
 
 _OSSLSIGNCODE_EXT = [
     ".exe",
@@ -58,15 +65,54 @@ _CODESIGN_EXT = [
     ".dmg",
 ]
 
+_JARSIGNER_EXT = [
+    ".jar",
+]
+
 _COSIGN_SIDECAR_SUFFIXES = [".sig", ".bundle.json"]
 
 _REGISTRATION = {
     "osslsigncode": "\"@signing_osslsigncode//:osslsigncode_toolchain\"",
     "cosign": "\"@signing_cosign//:cosign_toolchain\"",
     "codesign": "\"@codesign.bzl//toolchain:all\"",
+    "jarsigner": "\"@rules_java//toolchains:all\"",
 }
 
-def _detect_tool(src):
+_FORMAT_SIGNERS = {
+    PE: "osslsigncode",
+    MACHO: "codesign",
+    JAR: "jarsigner",
+}
+
+def _detect_tool(src, formats = {}):
+    """The signer for `src`, decided entirely at analysis time.
+
+    Two kinds of evidence, and the order between them is the point.
+
+    1. The rule that produces the file, via `binary_format_aspect`. A rule
+       that is in the table speaks for its outputs conclusively, including
+       when what it has to say is that they are *not* native binaries. That
+       verdict is final and step 2 is not reached.
+
+    2. The file's name, for files no rule spoke for: prebuilts committed to
+       the repository, downloads, anything a `genrule` emitted. Also the only
+       possible evidence for the formats Authenticode defines by file type --
+       PowerShell and JavaScript scripts, `.msi` and `.cab` installers,
+       `.cat` catalogs, `.dmg`/`.pkg` images -- since no compiler emits those
+       and so no rule kind can describe them.
+
+    Letting step 1 lose to step 2 is how a `native_binary` wrapping a Linux
+    ELF gets signed as a Windows PE: it names its output `<name>.exe` on
+    every platform. Hence NOT_NATIVE, which is a rule saying "no" rather than
+    a rule saying nothing.
+
+    Anything still unaccounted for is signed with a detached signature, which
+    is the one option that works on a file whose contents are unknown.
+    """
+    fmt = formats.get(src)
+    if fmt != None:
+        return _FORMAT_SIGNERS.get(fmt, "cosign")
+
     p = src.short_path.lower()
     for ext in _OSSLSIGNCODE_EXT:
         if p.endswith(ext):
@@ -74,17 +120,10 @@ def _detect_tool(src):
     for ext in _CODESIGN_EXT:
         if p.endswith(ext):
             return "codesign"
-    return "cosign"
-
-def _has_known_extension(src):
-    p = src.short_path.lower()
-    for ext in _OSSLSIGNCODE_EXT + _CODESIGN_EXT:
+    for ext in _JARSIGNER_EXT:
         if p.endswith(ext):
-            return True
-
-    # A basename with no dot cannot be classified by extension at all.
-    basename = p.rpartition("/")[2]
-    return "." in basename
+            return "jarsigner"
+    return "cosign"
 
 DETACHED_SIGNATURE_MODES = ["auto", "always", "never"]
 
@@ -103,7 +142,13 @@ def _wants_detached(signer, detached_signatures):
         return False
     return signer == "cosign"
 
-def _needs_toolchain(srcs, selected_tool, tool_kind, require, detached_signatures = "auto"):
+def _needs_toolchain(
+        srcs,
+        selected_tool,
+        tool_kind,
+        require,
+        detached_signatures = "auto",
+        formats = {}):
     if tool_kind in require:
         return True
     if selected_tool == tool_kind:
@@ -117,24 +162,20 @@ def _needs_toolchain(srcs, selected_tool, tool_kind, require, detached_signature
     if selected_tool != "auto":
         return False
 
-    # For cosign, require the toolchain only if at least one input would be
-    # routed to cosign (unknown extensions) or requires runtime detection.
-
     for f in srcs:
         # Directory artifact contents are only available at execution time, so
         # require every native signer: an ordinary directory may hold nested
-        # exe/dll files needing osslsigncode, or Mach-O binaries and nested
-        # .app/.dmg/.pkg bundles needing codesign.
+        # exe/dll files needing osslsigncode, Mach-O binaries and nested
+        # .app/.dmg/.pkg bundles needing codesign, or jars needing jarsigner.
         if f.is_directory:
             return True
 
-        # Extensionless files are classified by sniffing their header at
-        # execution time, which analysis cannot do, so both native signers must
-        # be available. This is common for Mach-O binaries on macOS.
-        if not _has_known_extension(f):
-            return True
-
-        if _detect_tool(f) == tool_kind:
+        # Every file is classified during analysis, so only the toolchains
+        # actually selected are asked for. A file whose producing rule is
+        # unknown to detection and whose name says nothing is signed with a
+        # detached signature rather than forcing every toolchain to be
+        # registered against the chance that it turns out to be a binary.
+        if _detect_tool(f, formats) == tool_kind:
             return True
     return False
 
@@ -144,13 +185,14 @@ def _needs_toolchain_reason(
         tool_kind,
         require,
         require_reason,
-        detached_signatures = "auto"):
+        detached_signatures = "auto",
+        formats = {}):
     """Explains why `tool_kind` was required, for the failure message.
 
     With an explicit `tool` the answer is trivial, but under `auto` the
-    requirement usually comes from an input whose signer cannot be known until
-    the action runs, which is otherwise a confusing thing to be asked to
-    register a toolchain for.
+    requirement usually comes from a particular input, which is worth naming
+    rather than leaving the reader to work out which of their sources asked
+    for a toolchain they have not registered.
     """
     if tool_kind in require:
         if require_reason:
@@ -172,11 +214,24 @@ def _needs_toolchain_reason(
                 "contents are only known when the action runs, so every " +
                 "signer must be available"
             )
-        if not _has_known_extension(f):
-            return (
-                "`tool = \"auto\"` and '{}' has no recognizable ".format(f.short_path) +
-                "extension, so it is classified by its header bytes at " +
-                "execution time and every signer must be available"
+        if _detect_tool(f, formats) == tool_kind:
+            if formats.get(f):
+                if formats[f] == JAR:
+                    return "'{}' is built as a jar".format(f.short_path)
+                return (
+                    "'{}' is built as a {} binary".format(
+                        f.short_path,
+                        "Windows PE" if formats[f] == PE else "Mach-O",
+                    )
+                )
+            if f in formats:
+                return (
+                    "'{}' is built by a rule that produces no natively ".format(f.short_path) +
+                    "signable binary, so it gets a detached signature"
+                )
+            return "'{}' is signed with {} because of its name".format(
+                f.short_path,
+                tool_kind,
             )
 
     return "`tool = \"auto\"` and at least one input is signed with it"
@@ -211,6 +266,30 @@ def _toolchain_tool(ctx, toolchain_type):
             return f
     return None
 
+def _jarsigner_tool_and_support_files(ctx):
+    """Returns `(jarsigner File, support files)`, or `(None, [])` if unresolved.
+
+    jarsigner is not exposed by a `ToolchainInfo.tool` field the way the other
+    signers are: `@bazel_tools//tools/jdk:runtime_toolchain_type` resolves to
+    a `java_runtime`, whose `files` carry the whole JDK tree, jarsigner
+    included. jarsigner is a real dynamically-linked binary that loads shared
+    libraries from elsewhere in that tree (`libjli`, `libjava`, ...), so the
+    entire tree -- not just the one file -- has to reach the sandbox as the
+    action's inputs, exactly as `openssl_toolchain`'s `data` does for
+    Windows' DLLs.
+    """
+    tc = ctx.toolchains[JARSIGNER_TOOLCHAIN]
+    if tc == None:
+        return None, []
+    runtime = getattr(tc, "java_runtime", None)
+    if runtime == None:
+        return None, []
+    files = runtime.files.to_list()
+    for f in files:
+        if f.basename == "jarsigner" or f.basename == "jarsigner.exe":
+            return f, files
+    return None, []
+
 def signing_context(
         ctx,
         srcs = [],
@@ -218,6 +297,7 @@ def signing_context(
         require_reason = "",
         tool = None,
         detached_signatures = None,
+        formats = {},
         name = None,
         attr_prefix = "signing_"):
     """Resolves signing toolchains and certificate material for `ctx`.
@@ -232,11 +312,11 @@ def signing_context(
             `tool = "auto"`, and to explain why if one is missing. Rules that
             sign something produced by the action itself (so nothing is known
             yet) pass nothing here and use `require` instead.
-        require: tool kinds (`"osslsigncode"`, `"codesign"`, `"cosign"`) that
-            this rule always needs regardless of `srcs`. Use this when the
-            signing target does not exist at analysis time, so that a missing
-            toolchain fails during analysis with a clear message rather than
-            part-way through the action.
+        require: tool kinds (`"osslsigncode"`, `"codesign"`, `"cosign"`,
+            `"jarsigner"`) that this rule always needs regardless of `srcs`.
+            Use this when the signing target does not exist at analysis
+            time, so that a missing toolchain fails during analysis with a
+            clear message rather than part-way through the action.
         require_reason: human-readable explanation of `require`, quoted in the
             missing-toolchain error. For example "an NSIS uninstaller is
             always a PE executable".
@@ -244,6 +324,10 @@ def signing_context(
             kind of artifact can pin the signer here instead of exposing the
             choice.
         detached_signatures: overrides the `detached_signatures` attribute.
+        formats: `File` to binary-format mapping from `binary_formats()`,
+            naming the sources that are native binaries. Sources absent from
+            it are classified by name instead, so passing nothing is valid
+            and simply means no rule vouched for anything.
         name: base name for the generated parameter file. Defaults to the
             target name. Pass distinct values if one target builds more than
             one signing context.
@@ -372,6 +456,7 @@ def signing_context(
             kind,
             require,
             detached_mode,
+            formats,
         ):
             if ctx.toolchains[toolchain_type] != None:
                 fail(
@@ -387,12 +472,50 @@ def signing_context(
                     require,
                     require_reason,
                     detached_mode,
+                    formats,
                 ),
                 tool_mode,
             )
         if tool_file:
             args.add("--{}-tool".format(kind), tool_file.path if tool_file else "")
             inputs.append(tool_file)
+
+    # jarsigner is resolved separately: it comes from rules_java's runtime
+    # toolchain rather than one of this project's own, so it is neither a
+    # `ToolchainInfo.tool` field `_toolchain_tool` understands nor a single
+    # file -- the whole JDK tree it was found in has to travel with it.
+    jarsigner_file, jarsigner_support_files = _jarsigner_tool_and_support_files(ctx)
+    if jarsigner_file == None and _needs_toolchain(
+        srcs,
+        tool_mode,
+        "jarsigner",
+        require,
+        detached_mode,
+        formats,
+    ):
+        if ctx.toolchains[JARSIGNER_TOOLCHAIN] != None:
+            fail(
+                "rules_signing: a JDK toolchain is resolved but it does not " +
+                "include jarsigner (a JRE-only distribution?). Point the " +
+                "JDK toolchain at a full JDK, for example with " +
+                "--java_runtime_version.",
+            )
+        _fail_missing_toolchain(
+            "jarsigner",
+            _needs_toolchain_reason(
+                srcs,
+                tool_mode,
+                "jarsigner",
+                require,
+                require_reason,
+                detached_mode,
+                formats,
+            ),
+            tool_mode,
+        )
+    if jarsigner_file:
+        args.add("--jarsigner-tool", jarsigner_file.path)
+        inputs.extend(jarsigner_support_files)
 
     # openssl is optional and only consulted when PKCS#12 material has to be
     # converted to PEM for cosign, which cannot be known until the action runs.
@@ -576,6 +699,7 @@ def signed_outputs(
         out_name = None,
         tool = None,
         detached_signatures = None,
+        formats = {},
         attr_prefix = "signing_"):
     """Declares one output artifact per source, plus cosign's sidecar files.
 
@@ -585,19 +709,18 @@ def signed_outputs(
     cosign additionally get the `.sig` and `.bundle.json` files that a
     detached signature consists of.
 
-    Which signer each source is routed to is decided here, from the `tool`
-    attribute and the source's name, by exactly the rule that names them: one
-    of the native signers for the extensions they own, and cosign for
-    everything else -- extensionless files included, since a name that carries
-    no extension carries no evidence of a native format either. The choice is
-    recorded in the manifest and the action is bound to it, so the files that
-    appear are always the files declared here.
+    Which signer each source is routed to is decided here, and entirely from
+    what analysis knows: first the rule that builds the file, which reports
+    whether it is a native binary and in which format, and failing that the
+    source's name, for files no rule vouched for. The choice is recorded in
+    the manifest and the action is bound to it, so the files that appear are
+    always the files declared here, and each source is signed exactly once.
 
-    That leaves the header sniffing `tool = "auto"` does at execution time
-    free to do what analysis genuinely cannot, which is recognise a Mach-O or
-    PE binary behind a name that never said so. It applies the native
-    signature in addition to the detached one rather than instead of it, so it
-    changes what a file is signed with, never which files exist.
+    Nothing is re-decided at execution time. A file that reaches a native
+    signer has its signature embedded and needs no sidecar; one that does not
+    gets a detached signature and no embedded one. Because the signer is
+    settled before the build, those two facts can be declared together
+    instead of one of them being discovered too late to affect the other.
 
     `detached_signatures` overrides the routing question for every source at
     once: `"always"` gives each of them a `.sig` and `.bundle.json` whatever
@@ -613,6 +736,7 @@ def signed_outputs(
         tool: overrides the `tool` attribute, for rules that pin the signer.
         detached_signatures: overrides the `detached_signatures` attribute,
             which decides which sources get `.sig`/`.bundle.json` files.
+        formats: `File` to binary-format mapping from `binary_formats()`.
         attr_prefix: the prefix the signing attributes were declared with.
 
     Returns:
@@ -699,7 +823,7 @@ def signed_outputs(
             signed.append(out)
             continue
 
-        signer = tool_mode if tool_mode != "auto" else _detect_tool(src)
+        signer = tool_mode if tool_mode != "auto" else _detect_tool(src, formats)
         signers[src.path] = signer
 
         claim(relpath, src, "")
@@ -750,6 +874,7 @@ def sign_action(
         out_dir = None,
         outs = None,
         sctx = None,
+        formats = {},
         mnemonic = "SignTree",
         progress_message = None,
         attr_prefix = "signing_",
@@ -771,6 +896,8 @@ def sign_action(
         out_dir: a directory artifact from `ctx.actions.declare_directory`.
         outs: the struct returned by `signed_outputs`.
         sctx: a `signing_context` to reuse; one is created if omitted.
+        formats: `File` to binary-format mapping from `binary_formats()`.
+            Ignored when `sctx` is supplied, which already resolved them.
         mnemonic: action mnemonic.
         progress_message: action progress message.
         attr_prefix: the prefix the signing attributes were declared with.
@@ -784,7 +911,12 @@ def sign_action(
         fail("rules_signing: sign_action needs exactly one of `out_dir` or `outs`")
 
     if sctx == None:
-        sctx = signing_context(ctx, srcs = srcs, attr_prefix = attr_prefix)
+        sctx = signing_context(
+            ctx,
+            srcs = srcs,
+            formats = formats,
+            attr_prefix = attr_prefix,
+        )
 
     if outs != None:
         manifest = rel_src_manifest(
@@ -869,13 +1001,14 @@ def signing_attrs(prefix = "signing_"):
             default = "auto",
             values = TOOL_KINDS + ["auto"],
             doc = "Which signer to use, or \"auto\" (the default) to select " +
-                  "one per file from its extension and, failing that, its " +
-                  "header bytes. Note that \"auto\" requires every signing " +
-                  "toolchain to be registered whenever an input is a " +
-                  "directory artifact or has no recognizable extension, " +
-                  "because the contents that decide the signer are not " +
-                  "known until the action runs. Naming a single tool " +
-                  "explicitly requests only that toolchain.",
+                  "one per file: from the rule that builds it where that is " +
+                  "known, and otherwise from its extension. Note that " +
+                  "\"auto\" requires every signing toolchain to be " +
+                  "registered whenever an input is a directory artifact, " +
+                  "because a tree's contents are not known until the action " +
+                  "runs. Individual files request only the toolchains they " +
+                  "actually select. Naming a single tool explicitly " +
+                  "requests only that toolchain.",
         ),
         p + "detached_signatures": attr.string(
             default = "auto",
@@ -906,7 +1039,8 @@ def signing_attrs(prefix = "signing_"):
                   "default) does not timestamp, so signing makes no network " +
                   "call and no third party is told when you build. Set to " +
                   "\"default\" for the well-known authority of the signer in " +
-                  "use (Apple's for codesign, DigiCert's for osslsigncode), " +
+                  "use (Apple's for codesign, DigiCert's for osslsigncode and " +
+                  "jarsigner), " +
                   "or to the URL of a specific server. Note that without a " +
                   "timestamp a signature stops validating once the signing " +
                   "certificate expires, so released artifacts usually want " +
@@ -943,4 +1077,5 @@ SIGNING_TOOLCHAINS = [
     config_common.toolchain_type(COSIGN_TOOLCHAIN, mandatory = False),
     config_common.toolchain_type(CODESIGN_TOOLCHAIN, mandatory = False),
     config_common.toolchain_type(OPENSSL_TOOLCHAIN, mandatory = False),
+    config_common.toolchain_type(JARSIGNER_TOOLCHAIN, mandatory = False),
 ]

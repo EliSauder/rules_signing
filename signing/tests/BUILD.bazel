@@ -6,6 +6,7 @@ load(
     "app_bundle",
     "codesign_tool",
     "embedded_sign",
+    "jdk_tool",
     "pick_file",
 )
 load("//signing/tests:manifest.bzl", "file_name_manifest")
@@ -16,6 +17,10 @@ load(
     "DEV_SHARED_P12_BASE64",
 )
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@bazel_skylib//rules:native_binary.bzl", "native_binary")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_kotlin//kotlin:jvm.bzl", "kt_jvm_binary")
+load("@rules_scala//scala:scala.bzl", "scala_binary")
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image")
@@ -311,11 +316,32 @@ sign(
     url = SIGNED_URL,
 )
 
-# No `tool`, so the extensionless binary has to be routed to osslsigncode by
-# sniffing its PE header.
+# No `tool`, so the extensionless binary has to be routed to osslsigncode on
+# the strength of the rule that builds it.
 sign(
     name = "signed_real_pe_detected",
     src = ":hello_pe",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+# One grouping rule holding a binary and a text file, to pin that detection
+# carries through a filegroup and reaches only the file it is true of. The
+# group is where a whole-target answer would show up as a wrong one: classify
+# by position and the odd file out shifts the binary's verdict onto it, or
+# loses both.
+filegroup(
+    name = "mixed_group",
+    srcs = [
+        ":hello_pe",
+        "testdata_sign/docs/nested/guide.txt",
+    ],
+)
+
+sign(
+    name = "signed_mixed_group",
+    src = ":mixed_group",
     certificate = ":dev_cert_generic_pem",
     description = SIGNED_DESCRIPTION,
     url = SIGNED_URL,
@@ -514,6 +540,21 @@ sign(
     tool = "codesign",
 )
 
+# kotlin_greeting is defined further down, alongside the rest of the JVM
+# fixtures; labels resolve at analysis time, so the forward reference here is
+# fine.
+sign(
+    name = "signed_shared_jar",
+    src = ":kotlin_greeting",
+    certificate = ":dev_cert_shared",
+)
+
+pick_file(
+    name = "signed_shared_jar_jar",
+    src = ":signed_shared_jar",
+    suffix = "kotlin_greeting.jar",
+)
+
 sign(
     name = "signed_shared_blobs",
     src = ":unsigned_text_files",
@@ -599,6 +640,16 @@ sign(
 # Gives tests the rcodesign binary, which unlike cosign and osslsigncode is
 # only reachable through toolchain resolution.
 codesign_tool(name = "codesign_tool")
+
+jdk_tool(
+    name = "jarsigner_tool",
+    tool_name = "jarsigner",
+)
+
+jdk_tool(
+    name = "keytool_tool",
+    tool_name = "keytool",
+)
 
 py_test(
     name = "self_signed_certificate_test",
@@ -700,6 +751,8 @@ py_test(
         "--osslsigncode=$(rootpath @signing_osslsigncode//:osslsigncode_file)",
         "--cosign=$(rootpath @signing_cosign//:cosign_file)",
         "--codesign=$(rootpath :codesign_tool)",
+        "--jarsigner=$(rootpath :jarsigner_tool)",
+        "--keytool=$(rootpath :keytool_tool)",
         "--generic-ca=$(rootpath //signing/tests/testdata_certs:generic.crt)",
         "--cosign-public-key=$(rootpath //signing/tests/testdata_certs:cosign.pub)",
         # Quoted because Bazel applies shell tokenization to `args`, which
@@ -722,6 +775,10 @@ py_test(
         "--signed-blob=$(rootpath :signed_real_blobs_guide)",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/docs/readme.txt",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/config.yaml",
+        # A jar signed in place by jarsigner rather than cosign; the `.jar`
+        # signature is embedded, so there is no sidecar to hand to a verifier.
+        "--jar=$(rootpath :signed_kotlin_greeting_jar)",
+        "--jar=$(rootpath :signed_scala_greeting_jar)",
         # The single certificate that drives all three signers. Verification
         # trusts only the root, so the intermediate has to have travelled
         # inside each signature by way of the certificate's `ca_file`.
@@ -735,6 +792,7 @@ py_test(
         "--shared-pe=$(rootpath :signed_always_detached_exe)",
         "--shared-pe=$(rootpath :signed_never_detached_exe)",
         "--shared-macho=$(rootpath :signed_shared_macho)",
+        "--shared-jar=$(rootpath :signed_shared_jar_jar)",
         "--shared-blob=$(rootpath :signed_always_detached_exe)",
         "--shared-blob=$(rootpath :signed_always_detached_readme)",
         "--shared-blob=$(rootpath :signed_shared_blobs_readme)",
@@ -747,6 +805,11 @@ py_test(
     }),
     data = [
         ":codesign_tool",
+        ":jarsigner_tool",
+        ":keytool_tool",
+        ":signed_kotlin_greeting_jar",
+        ":signed_scala_greeting_jar",
+        ":signed_shared_jar_jar",
         ":signed_real_app_bundle",
         ":signed_real_blob_tree",
         ":signed_real_blobs",
@@ -805,6 +868,11 @@ file_name_manifest(
 )
 
 file_name_manifest(
+    name = "signed_mixed_group_outputs",
+    srcs = [":signed_mixed_group"],
+)
+
+file_name_manifest(
     name = "signed_real_blob_tree_outputs",
     srcs = [":signed_real_blob_tree"],
 )
@@ -834,6 +902,16 @@ py_test(
         "signing/tests/signed_real_blobs.signed",
         "--case=detected::$(rootpath :signed_real_pe_detected_outputs)::" +
         "signing/tests/signed_real_pe_detected.signed",
+        "--case=mixed_group::$(rootpath :signed_mixed_group_outputs)::" +
+        "signing/tests/signed_mixed_group.signed",
+        "--case=elf_named_exe::$(rootpath :signed_elf_named_exe_outputs)::" +
+        "signing/tests/signed_elf_named_exe.signed",
+        "--case=shell_greeting::$(rootpath :signed_shell_greeting_outputs)::" +
+        "signing/tests/signed_shell_greeting.signed",
+        "--case=kotlin_greeting::$(rootpath :signed_kotlin_greeting_outputs)::" +
+        "signing/tests/signed_kotlin_greeting.signed",
+        "--case=scala_greeting::$(rootpath :signed_scala_greeting_outputs)::" +
+        "signing/tests/signed_scala_greeting.signed",
         "--case=unsigned::$(rootpath :signed_default_outputs)::" +
         "signing/tests/signed_default.signed",
         "--case=tree::$(rootpath :signed_real_blob_tree_outputs)::" +
@@ -852,6 +930,16 @@ py_test(
         ":signed_never_detached_outputs",
         ":signed_real_blob_tree",
         ":signed_real_blob_tree_outputs",
+        ":signed_elf_named_exe",
+        ":signed_elf_named_exe_outputs",
+        ":signed_kotlin_greeting",
+        ":signed_kotlin_greeting_outputs",
+        ":signed_scala_greeting",
+        ":signed_scala_greeting_outputs",
+        ":signed_shell_greeting",
+        ":signed_shell_greeting_outputs",
+        ":signed_mixed_group",
+        ":signed_mixed_group_outputs",
         ":signed_real_blobs",
         ":signed_real_blobs_outputs",
         ":signed_real_pe_detected",
@@ -1043,4 +1131,116 @@ py_test(
         ":signed_awkward_names_passthrough_outputs",
     ],
     deps = ["@rules_python//python/runfiles"],
+)
+
+# An ELF called ".exe", which is what `native_binary` actually produces on
+# Linux: it names its output `<name>.exe` on every platform, saying so in its
+# own docs. The name is therefore the rule author's convention and not a fact
+# about the bytes, and a signer chosen from it would hand a Linux ELF to
+# osslsigncode. The platform is pinned rather than taken from the host so the
+# expectation holds wherever the suite runs.
+platform_binary(
+    name = "hello_elf",
+    binary = ":hello",
+    platform = "@zig_sdk//platform:linux_amd64",
+)
+
+native_binary(
+    name = "elf_named_exe",
+    src = ":hello_elf",
+    out = "elf_named_exe.exe",
+)
+
+sign(
+    name = "signed_elf_named_exe",
+    src = ":elf_named_exe",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+file_name_manifest(
+    name = "signed_elf_named_exe_outputs",
+    srcs = [":signed_elf_named_exe"],
+)
+
+# ---------------------------------------------------------------------------
+# not_native() rows, proven against real rules
+#
+# Each of these is executable and would look like a plausible addition to the
+# registry. Signing them with the shared development certificate proves the
+# `not_native()` row holds against the real rule, not just a hypothesis:
+# every one of them gets a detached signature and none reaches a native
+# signer.
+# ---------------------------------------------------------------------------
+
+# --- rules_shell ------------------------------------------------------------
+sh_binary(
+    name = "shell_greeting",
+    srcs = ["testdata_bin/greeting.sh"],
+)
+
+sign(
+    name = "signed_shell_greeting",
+    src = ":shell_greeting",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+file_name_manifest(
+    name = "signed_shell_greeting_outputs",
+    srcs = [":signed_shell_greeting"],
+)
+
+# --- rules_kotlin -------------------------------------------------------
+kt_jvm_binary(
+    name = "kotlin_greeting",
+    srcs = ["testdata_bin/Greeting.kt"],
+    main_class = "GreetingKt",
+)
+
+sign(
+    name = "signed_kotlin_greeting",
+    src = ":kotlin_greeting",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+file_name_manifest(
+    name = "signed_kotlin_greeting_outputs",
+    srcs = [":signed_kotlin_greeting"],
+)
+
+pick_file(
+    name = "signed_kotlin_greeting_jar",
+    src = ":signed_kotlin_greeting",
+    suffix = "kotlin_greeting.jar",
+)
+
+# --- rules_scala ----------------------------------------------------------
+scala_binary(
+    name = "scala_greeting",
+    srcs = ["testdata_bin/Greeting.scala"],
+    main_class = "Greeting",
+)
+
+sign(
+    name = "signed_scala_greeting",
+    src = ":scala_greeting",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+file_name_manifest(
+    name = "signed_scala_greeting_outputs",
+    srcs = [":signed_scala_greeting"],
+)
+
+pick_file(
+    name = "signed_scala_greeting_jar",
+    src = ":signed_scala_greeting",
+    suffix = "scala_greeting.jar",
 )

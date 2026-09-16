@@ -6,18 +6,33 @@ load(
     "signed_outputs",
     "signing_attrs",
 )
+load("//signing/private:detect.bzl", "binary_format_aspect", "binary_formats")
 
 def _sign_impl(ctx):
     srcs = ctx.attr.src[DefaultInfo].files.to_list()
+
+    # Which sources are native binaries, and of what format, as reported by
+    # the rules that build them. Decided here so that the signer, the
+    # toolchains asked for and the declared outputs are all derived from one
+    # answer rather than three that could disagree.
+    formats = binary_formats(ctx.attr.src)
+
     outs = signed_outputs(
         ctx,
         srcs = srcs,
         out_name = ctx.attr.out if ctx.attr.out else None,
+        formats = formats,
         attr_prefix = "",
     )
 
     if srcs:
-        sign_action(ctx, srcs = srcs, outs = outs, attr_prefix = "")
+        sign_action(
+            ctx,
+            srcs = srcs,
+            outs = outs,
+            formats = formats,
+            attr_prefix = "",
+        )
 
     return [DefaultInfo(
         files = depset(outs.files),
@@ -39,6 +54,7 @@ sign = rule(
         "src": attr.label(
             mandatory = True,
             providers = [[DefaultInfo]],
+            aspects = [binary_format_aspect],
             cfg = "target",
         ),
         "out": attr.string(

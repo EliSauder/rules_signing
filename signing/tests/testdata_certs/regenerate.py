@@ -4,15 +4,16 @@ Run with `bazel run //signing/tests/testdata_certs:regenerate`. The generated
 material is committed to the repository so that the test suite itself needs no
 network access, no host `openssl`, and no per-run key generation.
 
-A single CA-issued certificate can serve all three signers, and the `shared`
+A single CA-issued certificate can serve all four signers, and the `shared`
 set below is exactly that. The per-tool sets are kept alongside it because each
 still needs its own coverage:
 
   shared   A CA-issued RSA code-signing certificate, plus the CA that issued
-           it. osslsigncode and rcodesign consume it directly, and cosign
-           imports the same key into its own envelope, so one credential backs
-           every signer. Emitted as PEM and PKCS#12 so both the direct and the
-           openssl-converted paths are covered.
+           it. osslsigncode and rcodesign consume it directly, cosign imports
+           the same key into its own envelope, and jarsigner signs through a
+           throwaway PKCS#12 keystore built from it during the build, so one
+           credential backs every signer. Emitted as PEM and PKCS#12 so both
+           the direct and the openssl-converted paths are covered.
   generic  A self-signed plain code-signing certificate built with
            `cryptography`. Apple's profile adds X.509 extensions that
            osslsigncode rejects as "unhandled critical extension", so this
@@ -123,12 +124,16 @@ def generate_generic(outdir: pathlib.Path) -> None:
 def generate_shared(outdir: pathlib.Path) -> None:
     """Writes one CA-issued certificate that every signer can use.
 
-    The three signers reject each other's credentials only because of what is
-    *in* the certificate, not because of any real incompatibility: rcodesign's
-    Apple profile carries critical extensions osslsigncode refuses, and cosign
-    wants its own key envelope. A plain RSA code-signing certificate avoids the
-    first problem, and cosign's `import-key-pair` rewraps the same key to solve
-    the second, so this one credential backs all three.
+    osslsigncode, rcodesign and cosign reject each other's credentials only
+    because of what is *in* the certificate, not because of any real
+    incompatibility: rcodesign's Apple profile carries critical extensions
+    osslsigncode refuses, and cosign wants its own key envelope. A plain RSA
+    code-signing certificate avoids the first problem, and cosign's
+    `import-key-pair` rewraps the same key to solve the second. jarsigner
+    never reads a certificate directly at all -- it only reads a keystore --
+    so `sign` repackages this same credential into a throwaway PKCS#12
+    keystore during the build, which is a repackaging rather than a
+    rejection. So this one credential backs all four signers.
 
     It is issued by a small CA rather than self-signed so that the `ca_file`
     attribute has a real chain to embed and verifiers have a root to anchor to.

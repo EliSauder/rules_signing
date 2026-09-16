@@ -40,6 +40,90 @@ bazel_dep(name = "bazel_lib", version = "3.7.2")
 # this ruleset.
 bazel_dep(name = "hermetic_cc_toolchain", version = "4.3.0", dev_dependency = True)
 
+# Exercises the `not_native()` rows in the binary-kinds registry against a
+# real rule rather than a hypothesis: `sh_binary` produces a launcher script,
+# never a native binary, on every platform this suite runs on.
+bazel_dep(name = "rules_shell", version = "0.8.0", dev_dependency = True)
+
+# kt_jvm_binary is a JVM launcher like java_binary, never a native binary --
+# rules_kotlin, rules_scala and every other JVM ruleset share that shape.
+bazel_dep(name = "rules_kotlin", version = "2.4.10", dev_dependency = True)
+
+# rules_kotlin resolves a JDK through rules_java, which defaults to the host's
+# `local_jdk` -- absent on a bare CI runner. A remote JDK keeps the fixture
+# hermetic instead of depending on what happens to be installed.
+bazel_dep(name = "rules_java", version = "9.3.0", dev_dependency = True)
+
+java_toolchains = use_extension(
+    "@rules_java//java:extensions.bzl",
+    "toolchains",
+    dev_dependency = True,
+)
+use_repo(java_toolchains, "remotejdk17_linux", "remotejdk17_macos", "remotejdk17_macos_aarch64")
+
+register_toolchains(
+    "@rules_java//toolchains:all",
+    dev_dependency = True,
+)
+
+rules_kotlin_extensions = use_extension(
+    "@rules_kotlin//src/main/starlark/core/repositories:bzlmod_setup.bzl",
+    "rules_kotlin_extensions",
+    dev_dependency = True,
+)
+use_repo(
+    rules_kotlin_extensions,
+    "com_github_google_ksp",
+    "com_github_jetbrains_kotlin",
+    "com_github_jetbrains_kotlin_git",
+    "com_github_pinterest_ktlint",
+    "kotlinx_coroutines_core_jvm",
+    "kotlinx_serialization_core_jvm",
+    "kotlinx_serialization_json",
+    "kotlinx_serialization_json_jvm",
+    "kotlin_build_tools_api",
+    "kotlin_build_tools_impl",
+)
+
+register_toolchains("@rules_kotlin//kotlin/internal:default_toolchain", dev_dependency = True)
+
+# scala_binary is the same JVM-launcher shape again, under a different name.
+bazel_dep(name = "rules_scala", version = "7.3.0", dev_dependency = True)
+
+# rules_scala's transitive `protobuf` dep otherwise builds `protoc` from
+# source using whichever C++ toolchain resolves for the exec platform, which
+# is this repo's hermetic zig one -- and zig's linker does not yet support a
+# trick upb's generated code relies on. A prebuilt protoc toolchain sidesteps
+# compiling protobuf entirely, which is also strictly faster.
+scala_protoc = use_extension(
+    "@rules_scala//scala/extensions:protoc.bzl",
+    "scala_protoc",
+    dev_dependency = True,
+)
+use_repo(scala_protoc, "rules_scala_protoc_toolchains")
+
+register_toolchains(
+    "@rules_scala_protoc_toolchains//...:all",
+    dev_dependency = True,
+)
+
+scala_config = use_extension(
+    "@rules_scala//scala/extensions:config.bzl",
+    "scala_config",
+    dev_dependency = True,
+)
+scala_config.settings(scala_version = "2.13.18")
+
+scala_deps = use_extension(
+    "@rules_scala//scala/extensions:deps.bzl",
+    "scala_deps",
+    dev_dependency = True,
+)
+scala_deps.scala()
+use_repo(scala_deps, "rules_scala_toolchains")
+
+register_toolchains("@rules_scala_toolchains//...:all", dev_dependency = True)
+
 zig_toolchains = use_extension(
     "@hermetic_cc_toolchain//toolchain:ext.bzl",
     "toolchains",
