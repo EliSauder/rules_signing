@@ -48,6 +48,9 @@ my_packager = rule(
 output (`outfile`), or that sign many files in one pass (`rel_src_manifest`
 together with `out_dir`). For the common "sign these files, keep their
 layout" case, call `sign_action` and skip building the command line yourself.
+Pair it with `signed_outputs` to emit one output artifact per source (plus
+cosign's `.sig`/`.bundle.json` sidecars), or give it an `out_dir` tree
+artifact to collect everything into a single directory instead.
 """
 
 load(
@@ -57,6 +60,7 @@ load(
     _TOOL_KINDS = "TOOL_KINDS",
     _rel_src_manifest = "rel_src_manifest",
     _sign_action = "sign_action",
+    _signed_outputs = "signed_outputs",
     _signing_argv = "signing_argv",
     _signing_attrs = "signing_attrs",
     _signing_context = "signing_context",
@@ -69,4 +73,5 @@ signing_attrs = _signing_attrs
 signing_context = _signing_context
 signing_argv = _signing_argv
 sign_action = _sign_action
+signed_outputs = _signed_outputs
 rel_src_manifest = _rel_src_manifest

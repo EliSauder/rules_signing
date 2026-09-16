@@ -67,7 +67,7 @@ class SignatureVerificationTest(unittest.TestCase):
     def setUp(self):
         # The artifact lists come from the BUILD file, so an empty one would
         # turn a whole verification loop into a silent no-op.
-        for group in ("pe", "macho", "signed_blob", "shared_blob"):
+        for group in ("pe", "macho", "signed_blob", "shared_pe", "shared_blob"):
             self.assertTrue(
                 getattr(_ARGS, group), "no artifacts passed for --{}".format(group)
             )
@@ -226,15 +226,20 @@ class SignatureVerificationTest(unittest.TestCase):
 
         root = _rlocation(_ARGS.shared_root)
 
-        pe = _rlocation(_ARGS.shared_pe)
-        self.assertTrue(os.path.isfile(pe), pe)
-        result = _run([_ARGS.osslsigncode, "verify", "-CAfile", root, "-in", pe])
-        self.assertSucceeded(result, "osslsigncode verify")
+        for rootpath in _ARGS.shared_pe:
+            with self.subTest(artifact=rootpath):
+                pe = _rlocation(rootpath)
+                self.assertTrue(os.path.isfile(pe), pe)
+                result = _run(
+                    [_ARGS.osslsigncode, "verify", "-CAfile", root, "-in", pe]
+                )
+                self.assertSucceeded(result, "osslsigncode verify")
 
-        # The verifier trusts only the root, and the intermediate that closes
-        # the gap to the leaf is not on disk here. Chaining to the root is
-        # therefore only possible if `ca_file` embedded it in the signature.
-        self.assertIn("Signature verification: ok", result.stdout)
+                # The verifier trusts only the root, and the intermediate that
+                # closes the gap to the leaf is not on disk here. Chaining to
+                # the root is therefore only possible if `ca_file` embedded it
+                # in the signature.
+                self.assertIn("Signature verification: ok", result.stdout)
 
         macho = _rlocation(_ARGS.shared_macho)
         self.assertTrue(os.path.isfile(macho), macho)
@@ -329,7 +334,7 @@ def parse_args(argv):
     parser.add_argument("--signed-oci", default=None)
     parser.add_argument("--shared-root", required=True)
     parser.add_argument("--shared-public-key", required=True)
-    parser.add_argument("--shared-pe", required=True)
+    parser.add_argument("--shared-pe", action="append", default=[])
     parser.add_argument("--shared-macho", required=True)
     parser.add_argument("--shared-blob", action="append", default=[])
     return parser.parse_known_args(argv)

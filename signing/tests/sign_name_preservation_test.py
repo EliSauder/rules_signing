@@ -31,14 +31,24 @@ def _parse_args() -> argparse.Namespace:
         help="Rootpath of the file listing the expected source short_paths.",
     )
     parser.add_argument(
-        "--passthrough-tree",
+        "--passthrough-outputs",
         required=True,
-        help="Rootpath of the signed tree produced without a certificate.",
+        help="Rootpath of the declared-output manifest of the unsigned copy.",
     )
     parser.add_argument(
-        "--signed-tree",
+        "--passthrough-prefix",
         required=True,
-        help="Rootpath of the signed tree produced by a real signer.",
+        help="Output directory those outputs are listed under.",
+    )
+    parser.add_argument(
+        "--signed-outputs",
+        required=True,
+        help="Rootpath of the declared-output manifest of the signed copy.",
+    )
+    parser.add_argument(
+        "--signed-prefix",
+        required=True,
+        help="Output directory those outputs are listed under.",
     )
     # unittest.main() also reads sys.argv, so leave it anything we don't take.
     args, remaining = parser.parse_known_args()
@@ -90,14 +100,24 @@ def _expected_names() -> "list[str]":
     return [_canonical(line) for line in text.split("\n") if line]
 
 
-def _rel_files(root: pathlib.Path) -> "dict[str, pathlib.Path]":
-    """Maps each file below `root` from its canonical name to its real path."""
+def _rel_files(manifest_rootpath: str, prefix: str) -> "dict[str, pathlib.Path]":
+    """Maps each declared output from its canonical name to its real path.
 
-    return {
-        _canonical(p.relative_to(root).as_posix()): p
-        for p in root.rglob("*")
-        if p.is_file()
-    }
+    `sign` declares one output per source rather than a directory to be
+    walked, so the names it produced are read from the manifest of those
+    outputs. That is a stricter check than listing a directory: a name that
+    never reached the output set is missing here rather than merely absent
+    from disk.
+    """
+
+    text = _rlocation(manifest_rootpath).read_text(encoding="utf-8")
+    rels = {}
+    for line in text.split("\n"):
+        if not line:
+            continue
+        assert line.startswith(prefix + "/"), f"{line} is not under {prefix}"
+        rels[_canonical(line[len(prefix) + 1:])] = _rlocation(line)
+    return rels
 
 
 class SignNamePreservationTest(unittest.TestCase):
@@ -128,26 +148,17 @@ class SignNamePreservationTest(unittest.TestCase):
             self.assertEqual(_canonical(doubled), name)
 
     def test_passthrough_copies_reproduce_every_name_exactly(self) -> None:
-        tree = _rlocation(_ARGS.passthrough_tree)
-        self.assertTrue(tree.is_dir(), f"expected a tree artifact: {tree}")
-
         self.assertEqual(
-            set(_rel_files(tree)),
+            set(_rel_files(_ARGS.passthrough_outputs, _ARGS.passthrough_prefix)),
             set(self.expected),
             "passthrough output names differ from the input names",
         )
 
     def test_real_signing_reproduces_every_name_exactly(self) -> None:
-        passthrough_tree = _rlocation(_ARGS.passthrough_tree)
-        self.assertTrue(
-            passthrough_tree.is_dir(),
-            f"expected a tree artifact: {passthrough_tree}",
+        actual = _rel_files(_ARGS.signed_outputs, _ARGS.signed_prefix)
+        passthrough = _rel_files(
+            _ARGS.passthrough_outputs, _ARGS.passthrough_prefix
         )
-        tree = _rlocation(_ARGS.signed_tree)
-        self.assertTrue(tree.is_dir(), f"expected a tree artifact: {tree}")
-
-        actual = _rel_files(tree)
-        passthrough = _rel_files(passthrough_tree)
 
         # cosign signs detached, so each input keeps its own name and gains
         # siblings; the signed artifact itself must still be byte-identical.

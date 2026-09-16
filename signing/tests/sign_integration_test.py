@@ -8,24 +8,30 @@ from python.runfiles import runfiles
 
 
 class OutputCase(NamedTuple):
-    tree_rootpath: str
+    manifest_rootpath: str
+    out_prefix: str
     src_root_rootpath: str
 
 
-def _parse_tree_case(raw: str) -> OutputCase:
-    tree_rootpath, src_root_rootpath = raw.split("::", 1)
-    return OutputCase(tree_rootpath, src_root_rootpath)
+def _parse_outputs_case(raw: str) -> OutputCase:
+    manifest_rootpath, out_prefix, src_root_rootpath = raw.split("::", 2)
+    return OutputCase(manifest_rootpath, out_prefix, src_root_rootpath)
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--tree",
-        dest="trees",
+        "--outputs",
+        dest="outputs",
         action="append",
         default=[],
-        type=_parse_tree_case,
-        help="<tree rootpath>::<source root rootpath>, repeatable.",
+        type=_parse_outputs_case,
+        help=(
+            "<output manifest rootpath>::<output directory prefix>::"
+            "<source root rootpath>, repeatable. The manifest lists the "
+            "target's declared outputs, which is what a `sign` target now "
+            "consists of instead of one directory."
+        ),
     )
     parser.add_argument(
         "--mixed-tree",
@@ -53,7 +59,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 _ARGS = _parse_args()
-OUTPUT_CASES = _ARGS.trees
+OUTPUT_CASES = _ARGS.outputs
 MIXED_TREES = _ARGS.mixed_trees
 SRC_FILE_ROOTPATHS = _ARGS.src_file_rootpaths
 
@@ -67,15 +73,36 @@ def _rlocation(rootpath: str) -> pathlib.Path:
 
 
 def _signed_tree_dir(tree_rootpath: str) -> pathlib.Path:
-    """Resolves a `sign()` tree-artifact output to its on-disk directory.
+    """Resolves a declared directory output to its on-disk directory.
 
-    A `sign()` output is a single declared directory, so it is registered as
+    A directory source is signed into a tree artifact, which is registered as
     one runfile whose Rlocation resolves directly to the physical bazel-out
     directory. That works the same way on Linux/macOS and on Windows's
     manifest-only runfiles, unlike assuming a path under TEST_SRCDIR is a
     real, walkable directory.
     """
     return _rlocation(tree_rootpath)
+
+
+def _declared_outputs(case: OutputCase) -> "dict[str, str]":
+    """Maps each declared output to its path relative to the output directory.
+
+    A `sign` target's outputs are ordinary files, one per source (plus the
+    sidecar files a detached signature consists of), rather than a single
+    directory that has to be walked to find out what is in it. The manifest
+    therefore *is* the output list, which is what makes it worth asserting
+    against.
+    """
+
+    text = _rlocation(case.manifest_rootpath).read_text(encoding="utf-8")
+    prefix = case.out_prefix + "/"
+    outputs = {}
+    for line in text.split("\n"):
+        if not line:
+            continue
+        assert line.startswith(prefix), f"{line} is not under {prefix}"
+        outputs[line] = line[len(prefix):]
+    return outputs
 
 
 def _collect_rel_files(root: pathlib.Path) -> set[str]:
@@ -94,13 +121,10 @@ def _src_files_under(src_root_rootpath: str) -> "list[str]":
 
 class SignIntegrationTest(unittest.TestCase):
     def test_all_sign_rule_parameter_permutations_build_and_preserve_layout(self) -> None:
-        self.assertGreater(len(OUTPUT_CASES), 0, "missing signed tree runfile args")
+        self.assertGreater(len(OUTPUT_CASES), 0, "missing output manifest args")
         self.assertGreater(len(SRC_FILE_ROOTPATHS), 0, "missing source file runfile args")
 
         for case in OUTPUT_CASES:
-            tree = _signed_tree_dir(case.tree_rootpath)
-            self.assertTrue(tree.is_dir(), f"expected output tree directory: {tree}")
-
             src_rootpaths = _src_files_under(case.src_root_rootpath)
             self.assertGreater(
                 len(src_rootpaths),
@@ -108,26 +132,27 @@ class SignIntegrationTest(unittest.TestCase):
                 f"no source files found under {case.src_root_rootpath}",
             )
 
-            src_root_prefix = case.src_root_rootpath + "/"
-            expected = {
-                (pathlib.Path(case.src_root_rootpath) / p[len(src_root_prefix):]).as_posix()
-                for p in src_rootpaths
-            }
-            actual = _collect_rel_files(tree)
+            outputs = _declared_outputs(case)
+
+            # Each source is signed into its own file, under the path it had
+            # in the source. None of these fixtures has resolvable signing
+            # material, so no detached signature is declared beside them and
+            # the outputs are exactly the inputs.
             self.assertEqual(
-                actual,
-                expected,
-                f"output layout mismatch for {case.tree_rootpath} (input {case.src_root_rootpath})",
+                set(outputs.values()),
+                set(src_rootpaths),
+                f"declared outputs mismatch for {case.manifest_rootpath} "
+                f"(input {case.src_root_rootpath})",
             )
 
-            # With no resolvable real signing material in integration fixtures, outputs
-            # must preserve content and structure exactly.
-            for src_rootpath in src_rootpaths:
-                rel_file = src_rootpath[len(src_root_prefix):]
-                expected_text = _rlocation(src_rootpath).read_text(encoding="utf-8")
-                output_rel = (pathlib.Path(case.src_root_rootpath) / rel_file).as_posix()
-                actual_text = (tree / output_rel).read_text(encoding="utf-8")
-                self.assertEqual(actual_text, expected_text, f"content mismatch: {rel_file}")
+            for output_rootpath, rel in outputs.items():
+                path = _rlocation(output_rootpath)
+                self.assertTrue(path.is_file(), f"expected an output file: {path}")
+                self.assertEqual(
+                    path.read_text(encoding="utf-8"),
+                    _rlocation(rel).read_text(encoding="utf-8"),
+                    f"content mismatch: {rel}",
+                )
 
     def test_mixed_content_directory_is_flattened_and_fully_preserved(self) -> None:
         self.assertGreater(len(MIXED_TREES), 0, "missing mixed tree runfile args")

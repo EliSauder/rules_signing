@@ -5,7 +5,9 @@
 ## What works now
 
 - Wrap any target that exposes `DefaultInfo.files`.
-- Preserve source output layout (relative paths) in a single output tree artifact.
+- Preserve source output layout (relative paths), with one output artifact per
+  source: a file is signed into a file, a directory into a directory. Only a
+  detached signature adds files, and only the ones it consists of.
 - Auto-select signer by file extension, then by file contents:
   - `osslsigncode`: `.exe`, `.dll`, `.msi`, `.sys`, and related Windows script/package extensions.
   - `codesign`: `.app`, `.pkg`, `.dmg`.
@@ -123,9 +125,76 @@ sign(
 )
 ```
 
-The `sign` target emits a **directory artifact** containing the signed/copied files under the same relative paths as the wrapped target.
+### What a `sign` target produces
 
-For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs. Note that with `tool = "auto"` any directory artifact requires every signing toolchain to be registered — see [Setup](#setup).
+Each source keeps its own shape. A file is signed into a **file**, a directory
+into a **directory artifact**, both under the same relative path the wrapped
+target used, below `<name>.signed/` (or the `out` you name). The directory
+itself is not an output; the files inside it are. So a target wrapping one
+`.exe` is that one signed `.exe`, and nothing else has to be unpacked to get
+at it.
+
+Signing with a detached signature adds files, because that is what such a
+signature is: a source signed with `cosign sign-blob` is accompanied by its
+`.sig` and `.bundle.json`, beside the original. A source signed natively
+(`osslsigncode`, `codesign`) has the signature embedded in the artifact, so
+the signed artifact is the whole output:
+
+| Source | Signer | Outputs |
+| --- | --- | --- |
+| `app.exe` | osslsigncode | `app.exe` |
+| `notes.md` | cosign | `notes.md`, `notes.md.sig`, `notes.md.bundle.json` |
+| `some_dir/` | per file, inside | `some_dir/` |
+
+Which signer a source is routed to is decided when the build graph is built,
+from `tool` and the source's name — the native signers for the extensions they
+own, cosign for everything else, extensionless files included. Under
+`tool = "auto"` the file's header is then read while the action runs, which is
+how a Mach-O or PE binary is recognised behind a name that never said so. That
+binary is signed natively **in addition to** the detached signature, never
+instead of it: reading the header changes what a file is signed with, not
+which files exist. Without it (an explicit `tool`, or a file that is not a
+native binary) the detached signature stands alone.
+
+### Choosing which files get a detached signature
+
+The table above is what `detached_signatures = "auto"`, the default, decides
+per source. The other two modes answer for every source at once, which takes
+the source's name out of the question entirely:
+
+```starlark
+sign(
+    name = "signed_release",
+    src = ":release_files",
+    certificate = ":release_cert",
+
+    # "auto"    the default: whatever a source cannot embed, it gets beside it
+    # "always"  every source gets a .sig and .bundle.json
+    # "never"   no source does
+    detached_signatures = "always",
+)
+```
+
+`"always"` makes a target's outputs predictable from its sources alone — three
+files per source, whatever they are called — and gives natively signed
+artifacts a second, detached signature as well, applied over the artifact as
+it will be delivered so both verify against the same bytes. The cost is a
+cosign invocation per file (plus a timestamp or transparency-log round trip
+each, if those are on) and a second signature whose key and verification
+instructions you have to publish alongside the first. It requires a
+`certificate`, since a `.sig` that was promised cannot be silently skipped.
+
+`"never"` leaves only what native signers embed. Anything without a native
+signer is then copied through **unsigned** rather than merely unverified, so
+reach for it when you are signing binaries and deliberately not signing
+anything else.
+
+Because a file's outputs are known before it is signed, a target that wraps a
+single source can be referenced directly — `$(rootpath :signed_installer)` is
+the signed installer. A target that wraps several has several outputs, so use
+`$(rootpaths ...)`, or `filegroup`/`select` on what you need.
+
+For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs. A directory's contents are only known when the action runs, so nothing inside it is declared file by file and the same freedom applies as before. Note that with `tool = "auto"` any directory artifact requires every signing toolchain to be registered — see [Setup](#setup).
 
 ### Stamping
 
@@ -154,7 +223,11 @@ build output would be a worse practice than passing it as an argument.
 A `path`-encoded `certificate` template that renders to a location which does
 not exist on disk (e.g. a secret not present in this build environment) is
 tolerated rather than treated as a hard error — the affected `sign` targets
-just proceed as if no certificate had been configured. An unresolved `{KEY}`
+just proceed as if no certificate had been configured. The exception is a
+source whose detached signature was declared as an output: since a `.sig` that
+was promised cannot be quietly left out, and an empty one would be worse than
+none, that combination fails with a message naming the certificate. Drop the
+`certificate` attribute to build unsigned copies deliberately. An unresolved `{KEY}`
 placeholder (no `stamp_defaults` entry and stamping disabled or missing the
 key) is always a hard build error, since that usually means a workspace
 status key was never wired up.
@@ -472,7 +545,10 @@ intermediary claims.
 `outfile`), or that sign many files in one pass (`rel_src_manifest` with
 `out_dir`). Use `path_fn` when the consuming tool needs a different path
 spelling, such as Windows-style separators. For the plain "sign these files,
-keep their layout" case, call `sign_action` and skip building the command line.
+keep their layout" case, call `sign_action` and skip building the command
+line: pair it with `signed_outputs` to declare one output per source the way
+`sign` does, or hand it an `out_dir` tree artifact to collect everything into
+a single directory instead.
 
 ## Standalone consumer module test
 

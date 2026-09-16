@@ -1,7 +1,13 @@
 load("//signing:defs.bzl", "certificate", "self_signed_certificate", "sign")
 load("//signing/tests:tree.bzl", "make_tree")
 load("//signing/tests:cross.bzl", "platform_binary")
-load("//signing/tests:fixtures.bzl", "app_bundle", "codesign_tool", "embedded_sign")
+load(
+    "//signing/tests:fixtures.bzl",
+    "app_bundle",
+    "codesign_tool",
+    "embedded_sign",
+    "pick_file",
+)
 load("//signing/tests:manifest.bzl", "file_name_manifest")
 load(
     "//signing/tests/testdata_certs:certs.bzl",
@@ -62,9 +68,14 @@ sign(
     tool = "osslsigncode",
 )
 
+# A `path`-encoded certificate template that renders to a file which is not
+# there is tolerated rather than fatal (see the README), which only holds
+# where nothing declared a detached signature as an output. A directory
+# artifact is exactly that case: its contents, and so its signatures, are the
+# action's to decide.
 sign(
     name = "signed_with_cert_template_path",
-    src = ":unsigned_text_files",
+    src = ":mixed_tree",
     certificate = ":cert_template_path",
     timestamp_url = "https://timestamp.example.invalid",
     description = "rules_signing test description",
@@ -426,6 +437,55 @@ sign(
     certificate = ":dev_cert_cosign",
 )
 
+# One source a native signer claims and one it does not, so that
+# `detached_signatures` is observed doing the thing it exists for: making the
+# output set the same for both of them.
+filegroup(
+    name = "pe_and_blob",
+    srcs = [
+        "testdata_sign/docs/readme.txt",
+        ":hello_exe",
+    ],
+)
+
+# Every source gets a detached signature. The PE is still signed natively as
+# well, so it carries both, and the detached signature is taken over the PE as
+# it is delivered -- signature included -- which sign_verify_test checks by
+# verifying each of them against the same output file.
+sign(
+    name = "signed_always_detached",
+    src = ":pe_and_blob",
+    certificate = ":dev_cert_shared",
+    detached_signatures = "always",
+)
+
+# No source gets one, leaving only what a native signer embeds. The text file
+# has no native signer, so it is copied through unsigned.
+sign(
+    name = "signed_never_detached",
+    src = ":pe_and_blob",
+    certificate = ":dev_cert_shared",
+    detached_signatures = "never",
+)
+
+pick_file(
+    name = "signed_always_detached_exe",
+    src = ":signed_always_detached",
+    suffix = "signing/tests/hello.exe",
+)
+
+pick_file(
+    name = "signed_always_detached_readme",
+    src = ":signed_always_detached",
+    suffix = "docs/readme.txt",
+)
+
+pick_file(
+    name = "signed_never_detached_exe",
+    src = ":signed_never_detached",
+    suffix = "signing/tests/hello.exe",
+)
+
 sign(
     name = "signed_real_oci_image",
     src = ":unsigned_oci_image",
@@ -560,11 +620,11 @@ py_test(
         "--pem-public-key=$(rootpath :self_signed_pem_cert_public_key)",
         "--p12-material=$(rootpath :self_signed_p12_cert_certificate)",
         "--p12-certificate=$(rootpath :self_signed_p12_cert_certificate_only)",
-        "--signed-pe=$(rootpath :signed_self_signed_pe)/signing/tests/hello.exe::" +
+        "--signed-pe=$(rootpath :signed_self_signed_pe)::" +
         "$(rootpath :self_signed_pem_cert_certificate_only)",
-        "--signed-pe=$(rootpath :signed_self_signed_pe_p12)/signing/tests/hello.exe::" +
+        "--signed-pe=$(rootpath :signed_self_signed_pe_p12)::" +
         "$(rootpath :self_signed_p12_cert_certificate_only)",
-        "--signed-blob=$(rootpath :signed_self_signed_blobs)/signing/tests/testdata_sign/docs/readme.txt",
+        "--signed-blob=$(rootpath :signed_self_signed_blobs_readme)",
     ],
     data = [
         ":self_signed_p12_cert_certificate",
@@ -573,6 +633,7 @@ py_test(
         ":self_signed_pem_cert_certificate_only",
         ":self_signed_pem_cert_public_key",
         ":signed_self_signed_blobs",
+        ":signed_self_signed_blobs_readme",
         ":signed_self_signed_pe",
         ":signed_self_signed_pe_p12",
         "@signing_cosign//:cosign_file",
@@ -585,6 +646,46 @@ py_test(
         "@signing_osslsigncode//:osslsigncode_file",
     ],
     deps = ["@rules_python//python/runfiles"],
+)
+
+# `sign` emits one output per source, so a test that verifies a single
+# signature names that one file rather than a path inside a directory. These
+# are the files whose signatures sign_verify_test and
+# self_signed_certificate_test check.
+pick_file(
+    name = "signed_real_pe_detected_binary",
+    src = ":signed_real_pe_detected",
+    suffix = "signing/tests/hello_pe",
+)
+
+pick_file(
+    name = "signed_real_blobs_readme",
+    src = ":signed_real_blobs",
+    suffix = "docs/readme.txt",
+)
+
+pick_file(
+    name = "signed_real_blobs_guide",
+    src = ":signed_real_blobs",
+    suffix = "docs/nested/guide.txt",
+)
+
+pick_file(
+    name = "signed_shared_blobs_readme",
+    src = ":signed_shared_blobs",
+    suffix = "docs/readme.txt",
+)
+
+pick_file(
+    name = "signed_shared_blobs_from_p12_readme",
+    src = ":signed_shared_blobs_from_p12",
+    suffix = "docs/readme.txt",
+)
+
+pick_file(
+    name = "signed_self_signed_blobs_readme",
+    src = ":signed_self_signed_blobs",
+    suffix = "docs/readme.txt",
 )
 
 py_test(
@@ -609,16 +710,16 @@ py_test(
         # Paths inside a signed tree mirror the source's own layout, except
         # when the whole tree is a single directory artifact, which is
         # flattened to the root of the output.
-        "--pe=$(rootpath :signed_real_pe_pem)/signing/tests/hello.exe",
-        "--pe=$(rootpath :signed_real_pe_p12)/signing/tests/hello.exe",
-        "--pe=$(rootpath :signed_real_pe_base64)/signing/tests/hello.exe",
-        "--pe=$(rootpath :signed_real_pe_detected)/signing/tests/hello_pe",
+        "--pe=$(rootpath :signed_real_pe_pem)",
+        "--pe=$(rootpath :signed_real_pe_p12)",
+        "--pe=$(rootpath :signed_real_pe_base64)",
+        "--pe=$(rootpath :signed_real_pe_detected_binary)",
         "--pe=$(rootpath :signed_real_pe_embedded)",
-        "--macho=$(rootpath :signed_real_macho_pem)/signing/tests/hello_macho",
-        "--macho=$(rootpath :signed_real_macho_p12)/signing/tests/hello_macho",
+        "--macho=$(rootpath :signed_real_macho_pem)",
+        "--macho=$(rootpath :signed_real_macho_p12)",
         "--app-bundle=$(rootpath :signed_real_app_bundle)",
-        "--signed-blob=$(rootpath :signed_real_blobs)/signing/tests/testdata_sign/docs/readme.txt",
-        "--signed-blob=$(rootpath :signed_real_blobs)/signing/tests/testdata_sign/docs/nested/guide.txt",
+        "--signed-blob=$(rootpath :signed_real_blobs_readme)",
+        "--signed-blob=$(rootpath :signed_real_blobs_guide)",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/docs/readme.txt",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/config.yaml",
         # The single certificate that drives all three signers. Verification
@@ -626,10 +727,18 @@ py_test(
         # inside each signature by way of the certificate's `ca_file`.
         "--shared-root=$(rootpath //signing/tests/testdata_certs:shared_root.crt)",
         "--shared-public-key=$(rootpath //signing/tests/testdata_certs:shared.pub)",
-        "--shared-pe=$(rootpath :signed_shared_pe)/signing/tests/hello.exe",
-        "--shared-macho=$(rootpath :signed_shared_macho)/signing/tests/hello_macho",
-        "--shared-blob=$(rootpath :signed_shared_blobs)/signing/tests/testdata_sign/docs/readme.txt",
-        "--shared-blob=$(rootpath :signed_shared_blobs_from_p12)/signing/tests/testdata_sign/docs/readme.txt",
+        "--shared-pe=$(rootpath :signed_shared_pe)",
+        # Both `detached_signatures` modes still embed the PE signature, and
+        # under "always" the detached one is taken over the PE as delivered,
+        # so verifying it against that same file is what proves the two were
+        # applied in an order that leaves both valid.
+        "--shared-pe=$(rootpath :signed_always_detached_exe)",
+        "--shared-pe=$(rootpath :signed_never_detached_exe)",
+        "--shared-macho=$(rootpath :signed_shared_macho)",
+        "--shared-blob=$(rootpath :signed_always_detached_exe)",
+        "--shared-blob=$(rootpath :signed_always_detached_readme)",
+        "--shared-blob=$(rootpath :signed_shared_blobs_readme)",
+        "--shared-blob=$(rootpath :signed_shared_blobs_from_p12_readme)",
     ] + select({
         # oci_image (and anything depending on it) is target_compatible_with
         # excluded on Windows; see unsigned_oci_image for why.
@@ -641,15 +750,25 @@ py_test(
         ":signed_real_app_bundle",
         ":signed_real_blob_tree",
         ":signed_real_blobs",
+        ":signed_real_blobs_guide",
+        ":signed_real_blobs_readme",
         ":signed_real_macho_p12",
+        ":signed_always_detached",
+        ":signed_always_detached_exe",
+        ":signed_always_detached_readme",
+        ":signed_never_detached",
+        ":signed_never_detached_exe",
         ":signed_real_macho_pem",
         ":signed_real_pe_base64",
         ":signed_real_pe_detected",
+        ":signed_real_pe_detected_binary",
         ":signed_real_pe_embedded",
         ":signed_real_pe_p12",
         ":signed_real_pe_pem",
         ":signed_shared_blobs",
         ":signed_shared_blobs_from_p12",
+        ":signed_shared_blobs_from_p12_readme",
+        ":signed_shared_blobs_readme",
         ":signed_shared_macho",
         ":signed_shared_pe",
         "//signing/tests/testdata_certs:cosign.pub",
@@ -666,6 +785,81 @@ py_test(
         "//signing/private/tools:sign_tool_lib",
         "@rules_python//python/runfiles",
     ],
+)
+
+# The output set each signing case produces, which is what
+# sign_output_shape_test asserts.
+file_name_manifest(
+    name = "signed_real_pe_pem_outputs",
+    srcs = [":signed_real_pe_pem"],
+)
+
+file_name_manifest(
+    name = "signed_real_blobs_outputs",
+    srcs = [":signed_real_blobs"],
+)
+
+file_name_manifest(
+    name = "signed_real_pe_detected_outputs",
+    srcs = [":signed_real_pe_detected"],
+)
+
+file_name_manifest(
+    name = "signed_real_blob_tree_outputs",
+    srcs = [":signed_real_blob_tree"],
+)
+
+file_name_manifest(
+    name = "signed_always_detached_outputs",
+    srcs = [":signed_always_detached"],
+)
+
+file_name_manifest(
+    name = "signed_never_detached_outputs",
+    srcs = [":signed_never_detached"],
+)
+
+py_test(
+    name = "sign_output_shape_test",
+    size = "small",
+    srcs = [
+        "//signing:__init__.py",
+        "__init__.py",
+        "sign_output_shape_test.py",
+    ],
+    args = [
+        "--case=pe::$(rootpath :signed_real_pe_pem_outputs)::" +
+        "signing/tests/signed_real_pe_pem.signed",
+        "--case=blobs::$(rootpath :signed_real_blobs_outputs)::" +
+        "signing/tests/signed_real_blobs.signed",
+        "--case=detected::$(rootpath :signed_real_pe_detected_outputs)::" +
+        "signing/tests/signed_real_pe_detected.signed",
+        "--case=unsigned::$(rootpath :signed_default_outputs)::" +
+        "signing/tests/signed_default.signed",
+        "--case=tree::$(rootpath :signed_real_blob_tree_outputs)::" +
+        "signing/tests",
+        "--case=always::$(rootpath :signed_always_detached_outputs)::" +
+        "signing/tests/signed_always_detached.signed",
+        "--case=never::$(rootpath :signed_never_detached_outputs)::" +
+        "signing/tests/signed_never_detached.signed",
+    ],
+    data = [
+        ":signed_always_detached",
+        ":signed_always_detached_outputs",
+        ":signed_default",
+        ":signed_default_outputs",
+        ":signed_never_detached",
+        ":signed_never_detached_outputs",
+        ":signed_real_blob_tree",
+        ":signed_real_blob_tree_outputs",
+        ":signed_real_blobs",
+        ":signed_real_blobs_outputs",
+        ":signed_real_pe_detected",
+        ":signed_real_pe_detected_outputs",
+        ":signed_real_pe_pem",
+        ":signed_real_pe_pem_outputs",
+    ],
+    deps = ["@rules_python//python/runfiles"],
 )
 
 py_test(
@@ -686,6 +880,28 @@ py_test(
     ],
 )
 
+# The declared outputs of each fixture, which sign_integration_test compares
+# against the sources they were built from.
+file_name_manifest(
+    name = "signed_default_outputs",
+    srcs = [":signed_default"],
+)
+
+file_name_manifest(
+    name = "signed_out_override_outputs",
+    srcs = [":signed_out_override"],
+)
+
+file_name_manifest(
+    name = "signed_force_osslsigncode_outputs",
+    srcs = [":signed_force_osslsigncode"],
+)
+
+file_name_manifest(
+    name = "signed_with_empty_certificate_outputs",
+    srcs = [":signed_with_empty_certificate"],
+)
+
 py_test(
     name = "sign_integration_test",
     srcs = [
@@ -698,10 +914,14 @@ py_test(
         ":unsigned_files",
         ":unsigned_text_files",
         ":signed_default",
+        ":signed_default_outputs",
         ":signed_out_override",
+        ":signed_out_override_outputs",
         ":signed_force_osslsigncode",
+        ":signed_force_osslsigncode_outputs",
         ":signed_with_cert_template_path",
         ":signed_with_empty_certificate",
+        ":signed_with_empty_certificate_outputs",
         ":signed_mixed_tree",
     ],
     args = [
@@ -710,12 +930,17 @@ py_test(
         # source file list is derived at runtime from the plain rootpath
         # arguments below (grouped by shared source-root prefix), rather than
         # being duplicated by hand in the test.
-        "--tree=$(rootpath :signed_default)::signing/tests/testdata_sign",
-        "--tree=$(rootpath :signed_out_override)::signing/tests/testdata_sign",
-        "--tree=$(rootpath :signed_force_osslsigncode)::signing/tests/testdata_sign",
-        "--tree=$(rootpath :signed_with_cert_template_path)::signing/tests/testdata_sign/docs",
-        "--tree=$(rootpath :signed_with_empty_certificate)::signing/tests/testdata_sign/docs",
+        "--outputs=$(rootpath :signed_default_outputs)::" +
+        "signing/tests/signed_default.signed::signing/tests/testdata_sign",
+        "--outputs=$(rootpath :signed_out_override_outputs)::" +
+        "signing/tests/custom_signed_output::signing/tests/testdata_sign",
+        "--outputs=$(rootpath :signed_force_osslsigncode_outputs)::" +
+        "signing/tests/signed_force_osslsigncode.signed::signing/tests/testdata_sign",
+        "--outputs=$(rootpath :signed_with_empty_certificate_outputs)::" +
+        "signing/tests/signed_with_empty_certificate.signed::" +
+        "signing/tests/testdata_sign/docs",
         "--mixed-tree=$(rootpath :signed_mixed_tree)",
+        "--mixed-tree=$(rootpath :signed_with_cert_template_path)",
         "$(rootpaths :unsigned_files)",
         "$(rootpaths :unsigned_text_files)",
     ],
@@ -785,6 +1010,16 @@ sign(
     tool = "cosign",
 )
 
+file_name_manifest(
+    name = "signed_awkward_names_passthrough_outputs",
+    srcs = [":signed_awkward_names_passthrough"],
+)
+
+file_name_manifest(
+    name = "signed_awkward_names_cosign_outputs",
+    srcs = [":signed_awkward_names_cosign"],
+)
+
 py_test(
     name = "sign_name_preservation_test",
     size = "small",
@@ -795,13 +1030,17 @@ py_test(
     ],
     args = [
         "--names-manifest=$(rootpath :awkward_names_manifest)",
-        "--passthrough-tree=$(rootpath :signed_awkward_names_passthrough)",
-        "--signed-tree=$(rootpath :signed_awkward_names_cosign)",
+        "--passthrough-outputs=$(rootpath :signed_awkward_names_passthrough_outputs)",
+        "--passthrough-prefix=signing/tests/signed_awkward_names_passthrough.signed",
+        "--signed-outputs=$(rootpath :signed_awkward_names_cosign_outputs)",
+        "--signed-prefix=signing/tests/signed_awkward_names_cosign.signed",
     ],
     data = [
         ":awkward_names_manifest",
         ":signed_awkward_names_cosign",
+        ":signed_awkward_names_cosign_outputs",
         ":signed_awkward_names_passthrough",
+        ":signed_awkward_names_passthrough_outputs",
     ],
     deps = ["@rules_python//python/runfiles"],
 )

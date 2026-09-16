@@ -126,8 +126,252 @@ class SignToolUnitTest(unittest.TestCase):
             transparency_log = ""
             ca_file = ""
             openssl_tool = ""
+            detached_signatures = "auto"
 
         return Args()
+
+    def test_manifest_carries_the_signer_the_caller_declared(self) -> None:
+        """The third field pins the signer; its absence leaves the choice open."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = pathlib.Path(tmp) / "m.txt"
+            manifest.write_text(
+                "docs/readme.txt\t/src/readme.txt\tcosign\n"
+                "bin/app.exe\t/src/app.exe\tosslsigncode\n"
+                "\t/src/tree\t\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                sign_tool.load_rel_src_manifest(str(manifest)),
+                [
+                    ("docs/readme.txt", "/src/readme.txt", "cosign"),
+                    ("bin/app.exe", "/src/app.exe", "osslsigncode"),
+                    ("", "/src/tree", ""),
+                ],
+            )
+
+    def test_detached_signatures_always_covers_natively_signed_files(self) -> None:
+        """"always" answers for every file, including one a signer claimed.
+
+        The plan is what the declared outputs were derived from, so a `.exe`
+        that analysis routed to osslsigncode still has to come back with a
+        detached signature -- otherwise the `.sig` and `.bundle.json` declared
+        for it would never be written.
+        """
+
+        args = self._args()
+        args.detached_signatures = "always"
+
+        self.assertEqual(
+            sign_tool.plan_signature(
+                signer="osslsigncode",
+                tool_mode="auto",
+                relpath="bin/app.exe",
+                infile="/src/app.exe",
+                args=args,
+            ),
+            ("osslsigncode", True),
+        )
+
+    def test_detached_signatures_never_leaves_the_native_signature_alone(self) -> None:
+        """"never" removes the detached signature, not the embedded one."""
+
+        args = self._args()
+        args.detached_signatures = "never"
+
+        self.assertEqual(
+            sign_tool.plan_signature(
+                signer="osslsigncode",
+                tool_mode="auto",
+                relpath="bin/app.exe",
+                infile="/src/app.exe",
+                args=args,
+            ),
+            ("osslsigncode", False),
+        )
+
+    def test_a_blob_with_no_detached_signature_is_copied_through(self) -> None:
+        """Under "never" nothing can sign a plain file, so it is passed along.
+
+        This is the mode's cost, and the reason it is not the default: the
+        file is delivered unsigned rather than merely unverified.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "readme.txt"
+            source.write_text("hello\n", encoding="utf-8")
+
+            args = self._args()
+            args.detached_signatures = "never"
+
+            out = root / "out" / "readme.txt"
+            sign_tool.sign_one(
+                tool_mode="auto",
+                signer="cosign",
+                relpath="readme.txt",
+                infile=str(source),
+                outfile=str(out),
+                args=args,
+                cert_path=str(root / "cert.pem"),
+                password="",
+                identity="",
+            )
+
+            self.assertEqual(out.read_text(encoding="utf-8"), "hello\n")
+            self.assertFalse(pathlib.Path(str(out) + ".sig").exists())
+            self.assertFalse(pathlib.Path(str(out) + ".bundle.json").exists())
+
+    def test_never_still_signs_a_binary_found_by_its_header(self) -> None:
+        """The native signature does not depend on the detached one.
+
+        An extensionless PE is routed to cosign by name, so "never" would
+        leave it unsigned if the header were only read on the way to a
+        detached signature. It is read regardless.
+        """
+
+        _, pe = _binary_fixtures()
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(sign_tool, "run_cmd", side_effect=_fake_run_cmd),
+            mock.patch.object(sign_tool, "run_cmd_capture", side_effect=_fake_run_cmd_capture),
+        ):
+            root = pathlib.Path(tmp)
+            cert = root / "cert.pem"
+            cert.write_text(_PEM_CERTIFICATE, encoding="utf-8")
+            source = root / "hello_pe"
+            shutil.copy(pe, source)
+
+            args = self._args()
+            args.detached_signatures = "never"
+            osslsigncode = root / "osslsigncode"
+            osslsigncode.write_text("", encoding="utf-8")
+            args.osslsigncode_tool = str(osslsigncode)
+
+            out = root / "out" / "hello_pe"
+            sign_tool.sign_one(
+                tool_mode="auto",
+                signer="cosign",
+                relpath="hello_pe",
+                infile=str(source),
+                outfile=str(out),
+                args=args,
+                cert_path=str(cert),
+                password="",
+                identity="",
+            )
+
+            self.assertIn(b"SIGNED:osslsigncode", out.read_bytes())
+            self.assertFalse(pathlib.Path(str(out) + ".sig").exists())
+
+    def test_declared_detached_outputs_survive_a_native_binary(self) -> None:
+        """Reading the header may add a signature, never a file.
+
+        A name with no extension is routed to cosign by the caller, which
+        declares the `.sig`/`.bundle.json` files that implies. Finding a PE
+        header here cannot take those files away again, so the binary is
+        signed natively *and* detached, over the natively signed result.
+        """
+
+        _, pe = _binary_fixtures()
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(sign_tool, "run_cmd", side_effect=_fake_run_cmd),
+            mock.patch.object(sign_tool, "run_cmd_capture", side_effect=_fake_run_cmd_capture),
+        ):
+            root = pathlib.Path(tmp)
+            cert = root / "cert.pem"
+            cert.write_text(_PEM_CERTIFICATE, encoding="utf-8")
+            source = root / "hello_pe"
+            shutil.copy(pe, source)
+
+            args = self._args()
+            # The native signer has to be a path that exists, since only a
+            # registered toolchain can be run.
+            osslsigncode = root / "osslsigncode"
+            osslsigncode.write_text("", encoding="utf-8")
+            args.osslsigncode_tool = str(osslsigncode)
+
+            out = root / "out" / "hello_pe"
+            sign_tool.sign_one(
+                tool_mode="auto",
+                signer="cosign",
+                relpath="hello_pe",
+                infile=str(source),
+                outfile=str(out),
+                args=args,
+                cert_path=str(cert),
+                password="",
+                identity="",
+            )
+
+            self.assertIn(b"SIGNED:osslsigncode", out.read_bytes())
+            self.assertTrue(out.with_suffix(".sig").is_file())
+            self.assertTrue(
+                pathlib.Path(str(out) + ".bundle.json").is_file()
+            )
+
+    def test_a_native_signer_without_a_toolchain_is_not_run(self) -> None:
+        """Only the detached signature is produced, which is what was declared."""
+
+        _, pe = _binary_fixtures()
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(sign_tool, "run_cmd", side_effect=_fake_run_cmd),
+            mock.patch.object(sign_tool, "run_cmd_capture", side_effect=_fake_run_cmd_capture),
+        ):
+            root = pathlib.Path(tmp)
+            cert = root / "cert.pem"
+            cert.write_text(_PEM_CERTIFICATE, encoding="utf-8")
+            source = root / "hello_pe"
+            shutil.copy(pe, source)
+
+            args = self._args()
+            args.osslsigncode_tool = ""
+
+            out = root / "out" / "hello_pe"
+            sign_tool.sign_one(
+                tool_mode="auto",
+                signer="cosign",
+                relpath="hello_pe",
+                infile=str(source),
+                outfile=str(out),
+                args=args,
+                cert_path=str(cert),
+                password="",
+                identity="",
+            )
+
+            self.assertNotIn(b"SIGNED:osslsigncode", out.read_bytes())
+            self.assertTrue(pathlib.Path(str(out) + ".sig").is_file())
+
+    def test_declared_signature_outputs_cannot_be_silently_skipped(self) -> None:
+        """Copying a file through unsigned is not an option once declared."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "readme.txt"
+            source.write_text("docs", encoding="utf-8")
+
+            args = self._args()
+            args.require_detached_signatures = True
+
+            with self.assertRaises(SystemExit) as raised:
+                sign_tool.sign_one(
+                    tool_mode="auto",
+                    signer="cosign",
+                    relpath="readme.txt",
+                    infile=str(source),
+                    outfile=str(root / "out" / "readme.txt"),
+                    args=args,
+                    cert_path=None,
+                    password="",
+                    identity="",
+                )
+            self.assertIn("no certificate resolved", str(raised.exception))
 
     def test_detect_tool(self) -> None:
         self.assertEqual(sign_tool.detect_tool("bin/App.EXE"), "osslsigncode")
