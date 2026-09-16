@@ -164,13 +164,14 @@ def _aspect_impl(target, ctx):
         for f in outputs:
             formats[f] = verdict
     elif is_jar_outputs_entry(entry):
-        # Only the `.jar` files are jarsigner-signable; a launcher script or
-        # `.jdeps` beside them is left unclassified rather than given this
-        # verdict, so it falls to being judged by its own name instead (which
-        # ordinarily says nothing, routing it to a detached signature).
+        # Only the `.jar` files are jarsigner-signable, but the rest of the
+        # rule's outputs still get a verdict rather than being left silent.
+        # A launcher stub or `.jdeps` beside the jar is conclusively not a
+        # native binary, and saying so is what stops the `<name>.exe` stub
+        # `scala_binary` reports on Windows from being read by that name
+        # afterwards and handed to osslsigncode, which would corrupt it.
         for f in outputs:
-            if f.extension == "jar":
-                formats[f] = verdict
+            formats[f] = verdict if f.extension == "jar" else NOT_NATIVE
 
     return [BinaryFormatInfo(formats = formats)]
 

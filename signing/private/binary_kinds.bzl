@@ -109,11 +109,15 @@ def jar_outputs():
     artifact -- `java_binary`'s shell/batch stub, `kt_jvm_binary`'s `.jdeps` --
     `executable()` and `all_outputs()` both pick the wrong thing: the former
     finds the launcher, not the jar, and the latter would hand jarsigner a
-    launcher script it cannot sign. Only the outputs actually named `.jar` get
-    a verdict here; everything else the rule reports is left unclassified,
-    which is what lets a launcher fall back to being judged by its own name
-    (ordinarily nothing, so it is signed with a detached signature) instead of
-    being misread as a jar itself.
+    launcher script it cannot sign.
+
+    Everything the rule reports still gets a verdict: the outputs named
+    `.jar` are jarsigner's, and the rest are conclusively `NOT_NATIVE`, the
+    same forced answer `not_native()` gives. Leaving the others silent is not
+    equivalent -- on Windows these rulesets name their launcher stub
+    `<name>.exe`, which with no verdict falls through to being judged by that
+    name and signed in place by osslsigncode, corrupting a launcher that was
+    never a PE.
     """
     return struct(kind = _JAR_OUTPUTS, attrs = [], format = JAR, names_are_evidence = True)
 
