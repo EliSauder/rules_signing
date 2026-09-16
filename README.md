@@ -11,6 +11,9 @@
 - Auto-select signer from the file's extension, or from the rule that produces it:
   - `osslsigncode`: `.exe`, `.dll`, `.msi`, `.sys`, and related Windows script/package extensions.
   - `codesign`: `.app`, `.pkg`, `.dmg`.
+  - `jarsigner`: `.jar`, including the jar a `java_binary`/`java_library`,
+    `kt_jvm_binary`/`kt_jvm_library` or `scala_binary`/`scala_library` builds
+    beside its launcher script.
   - `cosign sign-blob`: all other file types, producing colocated `.sig` and `.bundle.json` files.
 - Recognise extensionless native binaries without reading them, by asking which
   rule builds the file and which platform it is built for — so a `cc_binary`
@@ -40,6 +43,14 @@
   no dependency on Apple's `/usr/bin/codesign`. `identity` is optional and maps
   to the signature's binary identifier. Register the toolchain with
   `register_toolchains("@codesign.bzl//toolchain:all")` (see [Setup](#setup)).
+- For jars, `jarsigner` is resolved through rules_java's own JDK runtime
+  toolchain rather than a toolchain this project defines, so there is
+  normally nothing to register — Bazel registers a default JDK toolchain out
+  of the box, and jarsigner ships inside it. The signing material is
+  repackaged into a throwaway PKCS#12 keystore during the build (see
+  [Signing with a single certificate](#signing-with-a-single-certificate)),
+  so a PEM certificate works here too even though jarsigner itself only reads
+  a keystore.
 
 ## Setup
 
@@ -80,10 +91,12 @@ individual file needs is decided while the build graph is built, and the
 contents of a directory artifact (an `oci_image` layout, a `.app` bundle, or
 any other tree artifact) do not exist yet at that point. `tool = "auto"`
 therefore has to assume a tree may hold anything — nested `.exe`/`.dll` files
-needing `osslsigncode`, or Mach-O binaries and `.app`/`.dmg`/`.pkg` bundles
-needing `codesign` — and requires **all** signing toolchains, including
-`codesign.bzl`, even when nothing in the tree turns out to be an Apple
-artifact.
+needing `osslsigncode`, Mach-O binaries and `.app`/`.dmg`/`.pkg` bundles
+needing `codesign`, or `.jar` files needing `jarsigner` — and requires **all**
+signing toolchains, including `codesign.bzl`, even when nothing in the tree
+turns out to need them. jarsigner's toolchain is the one usually already
+registered by default (see [Setup](#setup)), so this rarely means anything
+extra to register in practice.
 
 Individual files do not have this problem. A file's signer is known exactly, so
 only the toolchains actually selected are requested: signing a single
@@ -124,7 +137,7 @@ sign(
     name = "signed_bundle",
     src = ":artifact_bundle",
     certificate = ":release_cert",
-    tool = "auto",  # auto | osslsigncode | codesign | cosign
+    tool = "auto",  # auto | osslsigncode | codesign | cosign | jarsigner
 )
 ```
 
@@ -146,6 +159,7 @@ the signed artifact is the whole output:
 | Source | Signer | Outputs |
 | --- | --- | --- |
 | `app.exe` | osslsigncode | `app.exe` |
+| `app.jar` | jarsigner | `app.jar` |
 | `notes.md` | cosign | `notes.md`, `notes.md.sig`, `notes.md.bundle.json` |
 | `some_dir/` | per file, inside | `some_dir/` |
 
@@ -197,6 +211,7 @@ RULE_KINDS = {
     "cc_binary": executable(),           # the rule's executable output
     "cc_shared_library": all_outputs(),  # every output is a native library
     "csharp_library": all_outputs(format = PE),  # PE on every platform
+    "java_binary": jar_outputs(),        # only the `.jar`, not its launcher
     "_copy_file": forward("src"),        # bytes come from another target
     "py_binary": not_native("a bootstrap script"),
 }
@@ -206,7 +221,8 @@ Because the keys are strings, adding a ruleset costs nothing to builds that do
 not use it — the table names `go_binary` without `rules_go` being in the module
 graph, and has no dependencies of its own to keep in sync. It currently covers
 rules_cc, rules_go, rules_rust, rules_swift, rules_apple, rules_dotnet,
-rules_zig, rules_d, rules_haskell, bazel_skylib and aspect_bazel_lib.
+rules_zig, rules_d, rules_haskell, the core Bazel Java rules, rules_kotlin,
+rules_scala, bazel_skylib and aspect_bazel_lib.
 
 A rule that is absent produces nothing signable, which is the right answer for
 `py_binary`, `sh_binary` and every other launcher script. `not_native()` rows
@@ -388,7 +404,7 @@ certificate should set this.
 ### Signing with a single certificate
 
 A `sign` target carries exactly one certificate, but `tool = "auto"` may dispatch
-to three different signers. One certificate can drive all three, provided it is
+to four different signers. One certificate can drive all four, provided it is
 issued as a plain code-signing certificate:
 
 - **PEM, not PKCS#12** — the private key and the certificate in one file, key
@@ -409,6 +425,15 @@ against the certificate's public key:
 cosign verify-blob --key cert-public-key.pem --bundle artifact.bundle.json artifact
 ```
 
+`jarsigner` is the other signer that cannot consume a certificate directly —
+it only ever reads a keystore. `sign` bridges this the same way, building a
+throwaway PKCS#12 keystore from the certificate during the action, under an
+alias `rules_signing` itself controls, so the original certificate's own
+alias (or a PEM's lack of one) never has to be recovered. Building that
+keystore needs the optional openssl toolchain (below) regardless of whether
+the certificate started as PEM or PKCS#12, since jarsigner has nothing to
+consume until the keystore exists.
+
 A PKCS#12 certificate is converted to PEM automatically, but only if the
 optional openssl toolchain is registered:
 
@@ -426,7 +451,8 @@ accepts either a literal path or a bare program name resolved against `PATH`,
 which is why the same tag works on Linux, macOS and Windows. Use
 `signing_tools.openssl(label = ...)` instead to point at an `openssl` built by
 another module. Without the toolchain, a PKCS#12 certificate routed to
-`cosign` fails with an actionable message rather than a cryptic cosign error.
+`cosign` or `jarsigner` fails with an actionable message rather than a cryptic
+error from either.
 
 Production Apple distribution still requires a real Apple-issued Developer ID
 certificate, which no other signer will accept — the single-certificate path is

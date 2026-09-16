@@ -6,6 +6,7 @@ load(
     "app_bundle",
     "codesign_tool",
     "embedded_sign",
+    "jdk_tool",
     "pick_file",
 )
 load("//signing/tests:manifest.bzl", "file_name_manifest")
@@ -539,6 +540,21 @@ sign(
     tool = "codesign",
 )
 
+# kotlin_greeting is defined further down, alongside the rest of the JVM
+# fixtures; labels resolve at analysis time, so the forward reference here is
+# fine.
+sign(
+    name = "signed_shared_jar",
+    src = ":kotlin_greeting",
+    certificate = ":dev_cert_shared",
+)
+
+pick_file(
+    name = "signed_shared_jar_jar",
+    src = ":signed_shared_jar",
+    suffix = "kotlin_greeting.jar",
+)
+
 sign(
     name = "signed_shared_blobs",
     src = ":unsigned_text_files",
@@ -624,6 +640,16 @@ sign(
 # Gives tests the rcodesign binary, which unlike cosign and osslsigncode is
 # only reachable through toolchain resolution.
 codesign_tool(name = "codesign_tool")
+
+jdk_tool(
+    name = "jarsigner_tool",
+    tool_name = "jarsigner",
+)
+
+jdk_tool(
+    name = "keytool_tool",
+    tool_name = "keytool",
+)
 
 py_test(
     name = "self_signed_certificate_test",
@@ -725,6 +751,8 @@ py_test(
         "--osslsigncode=$(rootpath @signing_osslsigncode//:osslsigncode_file)",
         "--cosign=$(rootpath @signing_cosign//:cosign_file)",
         "--codesign=$(rootpath :codesign_tool)",
+        "--jarsigner=$(rootpath :jarsigner_tool)",
+        "--keytool=$(rootpath :keytool_tool)",
         "--generic-ca=$(rootpath //signing/tests/testdata_certs:generic.crt)",
         "--cosign-public-key=$(rootpath //signing/tests/testdata_certs:cosign.pub)",
         # Quoted because Bazel applies shell tokenization to `args`, which
@@ -747,6 +775,10 @@ py_test(
         "--signed-blob=$(rootpath :signed_real_blobs_guide)",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/docs/readme.txt",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/config.yaml",
+        # A jar signed in place by jarsigner rather than cosign; the `.jar`
+        # signature is embedded, so there is no sidecar to hand to a verifier.
+        "--jar=$(rootpath :signed_kotlin_greeting_jar)",
+        "--jar=$(rootpath :signed_scala_greeting_jar)",
         # The single certificate that drives all three signers. Verification
         # trusts only the root, so the intermediate has to have travelled
         # inside each signature by way of the certificate's `ca_file`.
@@ -760,6 +792,7 @@ py_test(
         "--shared-pe=$(rootpath :signed_always_detached_exe)",
         "--shared-pe=$(rootpath :signed_never_detached_exe)",
         "--shared-macho=$(rootpath :signed_shared_macho)",
+        "--shared-jar=$(rootpath :signed_shared_jar_jar)",
         "--shared-blob=$(rootpath :signed_always_detached_exe)",
         "--shared-blob=$(rootpath :signed_always_detached_readme)",
         "--shared-blob=$(rootpath :signed_shared_blobs_readme)",
@@ -772,6 +805,11 @@ py_test(
     }),
     data = [
         ":codesign_tool",
+        ":jarsigner_tool",
+        ":keytool_tool",
+        ":signed_kotlin_greeting_jar",
+        ":signed_scala_greeting_jar",
+        ":signed_shared_jar_jar",
         ":signed_real_app_bundle",
         ":signed_real_blob_tree",
         ":signed_real_blobs",
@@ -1175,6 +1213,12 @@ file_name_manifest(
     srcs = [":signed_kotlin_greeting"],
 )
 
+pick_file(
+    name = "signed_kotlin_greeting_jar",
+    src = ":signed_kotlin_greeting",
+    suffix = "kotlin_greeting.jar",
+)
+
 # --- rules_scala ----------------------------------------------------------
 scala_binary(
     name = "scala_greeting",
@@ -1193,4 +1237,10 @@ sign(
 file_name_manifest(
     name = "signed_scala_greeting_outputs",
     srcs = [":signed_scala_greeting"],
+)
+
+pick_file(
+    name = "signed_scala_greeting_jar",
+    src = ":signed_scala_greeting",
+    suffix = "scala_greeting.jar",
 )

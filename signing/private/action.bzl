@@ -18,7 +18,7 @@ Everything such a rule needs is exposed here:
 """
 
 load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS", "maybe_stamp")
-load("//signing/private:binary_kinds.bzl", "MACHO", "PE")
+load("//signing/private:binary_kinds.bzl", "JAR", "MACHO", "PE")
 load(
     "//signing/private:common.bzl",
     "add_cert_args",
@@ -31,7 +31,13 @@ COSIGN_TOOLCHAIN = "//signing/toolchains:cosign_toolchain_type"
 CODESIGN_TOOLCHAIN = "@codesign.bzl//toolchain:toolchain_type"
 OPENSSL_TOOLCHAIN = "//signing/toolchains:openssl_toolchain_type"
 
-TOOL_KINDS = ["osslsigncode", "codesign", "cosign"]
+# jarsigner ships inside every JDK, so it is resolved through rules_java's own
+# runtime toolchain (the one `@bazel_tools//tools/jdk:runtime_toolchain_type`
+# points at, and which Bazel registers a default for out of the box) instead
+# of a toolchain this project defines and consumers must register themselves.
+JARSIGNER_TOOLCHAIN = "@bazel_tools//tools/jdk:runtime_toolchain_type"
+
+TOOL_KINDS = ["osslsigncode", "codesign", "cosign", "jarsigner"]
 
 _OSSLSIGNCODE_EXT = [
     ".exe",
@@ -59,17 +65,23 @@ _CODESIGN_EXT = [
     ".dmg",
 ]
 
+_JARSIGNER_EXT = [
+    ".jar",
+]
+
 _COSIGN_SIDECAR_SUFFIXES = [".sig", ".bundle.json"]
 
 _REGISTRATION = {
     "osslsigncode": "\"@signing_osslsigncode//:osslsigncode_toolchain\"",
     "cosign": "\"@signing_cosign//:cosign_toolchain\"",
     "codesign": "\"@codesign.bzl//toolchain:all\"",
+    "jarsigner": "\"@rules_java//toolchains:all\"",
 }
 
 _FORMAT_SIGNERS = {
     PE: "osslsigncode",
     MACHO: "codesign",
+    JAR: "jarsigner",
 }
 
 def _detect_tool(src, formats = {}):
@@ -108,6 +120,9 @@ def _detect_tool(src, formats = {}):
     for ext in _CODESIGN_EXT:
         if p.endswith(ext):
             return "codesign"
+    for ext in _JARSIGNER_EXT:
+        if p.endswith(ext):
+            return "jarsigner"
     return "cosign"
 
 DETACHED_SIGNATURE_MODES = ["auto", "always", "never"]
@@ -150,8 +165,8 @@ def _needs_toolchain(
     for f in srcs:
         # Directory artifact contents are only available at execution time, so
         # require every native signer: an ordinary directory may hold nested
-        # exe/dll files needing osslsigncode, or Mach-O binaries and nested
-        # .app/.dmg/.pkg bundles needing codesign.
+        # exe/dll files needing osslsigncode, Mach-O binaries and nested
+        # .app/.dmg/.pkg bundles needing codesign, or jars needing jarsigner.
         if f.is_directory:
             return True
 
@@ -201,6 +216,8 @@ def _needs_toolchain_reason(
             )
         if _detect_tool(f, formats) == tool_kind:
             if formats.get(f):
+                if formats[f] == JAR:
+                    return "'{}' is built as a jar".format(f.short_path)
                 return (
                     "'{}' is built as a {} binary".format(
                         f.short_path,
@@ -249,6 +266,30 @@ def _toolchain_tool(ctx, toolchain_type):
             return f
     return None
 
+def _jarsigner_tool_and_support_files(ctx):
+    """Returns `(jarsigner File, support files)`, or `(None, [])` if unresolved.
+
+    jarsigner is not exposed by a `ToolchainInfo.tool` field the way the other
+    signers are: `@bazel_tools//tools/jdk:runtime_toolchain_type` resolves to
+    a `java_runtime`, whose `files` carry the whole JDK tree, jarsigner
+    included. jarsigner is a real dynamically-linked binary that loads shared
+    libraries from elsewhere in that tree (`libjli`, `libjava`, ...), so the
+    entire tree -- not just the one file -- has to reach the sandbox as the
+    action's inputs, exactly as `openssl_toolchain`'s `data` does for
+    Windows' DLLs.
+    """
+    tc = ctx.toolchains[JARSIGNER_TOOLCHAIN]
+    if tc == None:
+        return None, []
+    runtime = getattr(tc, "java_runtime", None)
+    if runtime == None:
+        return None, []
+    files = runtime.files.to_list()
+    for f in files:
+        if f.basename == "jarsigner" or f.basename == "jarsigner.exe":
+            return f, files
+    return None, []
+
 def signing_context(
         ctx,
         srcs = [],
@@ -271,11 +312,11 @@ def signing_context(
             `tool = "auto"`, and to explain why if one is missing. Rules that
             sign something produced by the action itself (so nothing is known
             yet) pass nothing here and use `require` instead.
-        require: tool kinds (`"osslsigncode"`, `"codesign"`, `"cosign"`) that
-            this rule always needs regardless of `srcs`. Use this when the
-            signing target does not exist at analysis time, so that a missing
-            toolchain fails during analysis with a clear message rather than
-            part-way through the action.
+        require: tool kinds (`"osslsigncode"`, `"codesign"`, `"cosign"`,
+            `"jarsigner"`) that this rule always needs regardless of `srcs`.
+            Use this when the signing target does not exist at analysis
+            time, so that a missing toolchain fails during analysis with a
+            clear message rather than part-way through the action.
         require_reason: human-readable explanation of `require`, quoted in the
             missing-toolchain error. For example "an NSIS uninstaller is
             always a PE executable".
@@ -438,6 +479,43 @@ def signing_context(
         if tool_file:
             args.add("--{}-tool".format(kind), tool_file.path if tool_file else "")
             inputs.append(tool_file)
+
+    # jarsigner is resolved separately: it comes from rules_java's runtime
+    # toolchain rather than one of this project's own, so it is neither a
+    # `ToolchainInfo.tool` field `_toolchain_tool` understands nor a single
+    # file -- the whole JDK tree it was found in has to travel with it.
+    jarsigner_file, jarsigner_support_files = _jarsigner_tool_and_support_files(ctx)
+    if jarsigner_file == None and _needs_toolchain(
+        srcs,
+        tool_mode,
+        "jarsigner",
+        require,
+        detached_mode,
+        formats,
+    ):
+        if ctx.toolchains[JARSIGNER_TOOLCHAIN] != None:
+            fail(
+                "rules_signing: a JDK toolchain is resolved but it does not " +
+                "include jarsigner (a JRE-only distribution?). Point the " +
+                "JDK toolchain at a full JDK, for example with " +
+                "--java_runtime_version.",
+            )
+        _fail_missing_toolchain(
+            "jarsigner",
+            _needs_toolchain_reason(
+                srcs,
+                tool_mode,
+                "jarsigner",
+                require,
+                require_reason,
+                detached_mode,
+                formats,
+            ),
+            tool_mode,
+        )
+    if jarsigner_file:
+        args.add("--jarsigner-tool", jarsigner_file.path)
+        inputs.extend(jarsigner_support_files)
 
     # openssl is optional and only consulted when PKCS#12 material has to be
     # converted to PEM for cosign, which cannot be known until the action runs.
@@ -961,7 +1039,8 @@ def signing_attrs(prefix = "signing_"):
                   "default) does not timestamp, so signing makes no network " +
                   "call and no third party is told when you build. Set to " +
                   "\"default\" for the well-known authority of the signer in " +
-                  "use (Apple's for codesign, DigiCert's for osslsigncode), " +
+                  "use (Apple's for codesign, DigiCert's for osslsigncode and " +
+                  "jarsigner), " +
                   "or to the URL of a specific server. Note that without a " +
                   "timestamp a signature stops validating once the signing " +
                   "certificate expires, so released artifacts usually want " +
@@ -998,4 +1077,5 @@ SIGNING_TOOLCHAINS = [
     config_common.toolchain_type(COSIGN_TOOLCHAIN, mandatory = False),
     config_common.toolchain_type(CODESIGN_TOOLCHAIN, mandatory = False),
     config_common.toolchain_type(OPENSSL_TOOLCHAIN, mandatory = False),
+    config_common.toolchain_type(JARSIGNER_TOOLCHAIN, mandatory = False),
 ]

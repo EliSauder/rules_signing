@@ -27,6 +27,11 @@ platform it is being built for:
     "my_shared_library": all_outputs(), # every output is a native library
     "my_copy_rule": forward("src"),     # bytes come from another target
 
+`jar_outputs()` is the odd one out: it does not describe a native binary at
+all, but a `.jar` archive jarsigner can embed a signature into, for rules
+(any JVM ruleset's `_binary`/`_library`/`_import`) whose executable output is
+a launcher script beside the actual jar rather than the jar itself.
+
 `forward` is what makes rules that move bytes around without changing them --
 copies, renames, platform wrappers -- transparent to detection, so a binary
 does not stop being recognisable for having been through one.
@@ -47,6 +52,12 @@ native signer.
 PE = "pe"
 MACHO = "macho"
 
+# Unlike PE and MACHO, a jar is a jar on every platform: it is a zip archive
+# holding class files, not a compiled machine binary, so nothing about it
+# depends on the configuration a rule was analysed in. jar_outputs() below
+# pins it rather than reading it from the platform for that reason.
+JAR = "jar"
+
 # A verdict of "this file is not a natively signable binary", as opposed to no
 # verdict at all. The difference matters: a file nothing vouched for falls back
 # to being judged by its name, and for a file a rule *has* spoken for that
@@ -60,6 +71,7 @@ NOT_NATIVE = ""
 # table fails loudly at load time rather than silently classifying nothing.
 _EXECUTABLE = "executable"
 _ALL_OUTPUTS = "all_outputs"
+_JAR_OUTPUTS = "jar_outputs"
 _FORWARD = "forward"
 _NOT_NATIVE = "not_native"
 
@@ -89,6 +101,21 @@ def all_outputs(format = None):
         format: as for `executable`.
     """
     return struct(kind = _ALL_OUTPUTS, attrs = [], format = format, names_are_evidence = True)
+
+def jar_outputs():
+    """The `.jar` files among the rule's outputs are jarsigner-signable.
+
+    For rules whose executable output is a launcher script beside the actual
+    artifact -- `java_binary`'s shell/batch stub, `kt_jvm_binary`'s `.jdeps` --
+    `executable()` and `all_outputs()` both pick the wrong thing: the former
+    finds the launcher, not the jar, and the latter would hand jarsigner a
+    launcher script it cannot sign. Only the outputs actually named `.jar` get
+    a verdict here; everything else the rule reports is left unclassified,
+    which is what lets a launcher fall back to being judged by its own name
+    (ordinarily nothing, so it is signed with a detached signature) instead of
+    being misread as a jar itself.
+    """
+    return struct(kind = _JAR_OUTPUTS, attrs = [], format = JAR, names_are_evidence = True)
 
 def forward(*attrs, **kwargs):
     """The rule passes another target's bytes through unchanged.
@@ -128,9 +155,9 @@ def not_native(reason = ""):
     in `DefaultInfo` is recorded as `NOT_NATIVE`, the same forced verdict
     `forward(output_names_are_evidence = False)` gives a copy rule that names
     its own outputs. That is what keeps a launcher a ruleset names `<name>.exe`
-    on Windows -- `sh_binary`, `py_binary`, `java_binary` and the rest all do
-    this for their Windows stub -- from being read by that name afterwards
-    and handed to a native signer it was never meant for.
+    on Windows -- `sh_binary`, `py_binary` and the rest all do this for their
+    Windows stub -- from being read by that name afterwards and handed to a
+    native signer it was never meant for.
 
     Args:
         reason: why, quoted in documentation and nothing else.
@@ -192,6 +219,28 @@ RULE_KINDS = {
     "csharp_library": all_outputs(format = PE),
     "fsharp_library": all_outputs(format = PE),
 
+    # --- JVM rulesets --------------------------------------------------------
+    # A `.jar` is a zip, not a compiled binary, but jarsigner can embed a
+    # signature in one directly, so it gets a verdict here rather than being
+    # `not_native()` like every other archive format. Every ruleset that
+    # builds one shares the same output shape: the jar plus a launcher script
+    # (`java_binary`'s shell/batch stub, `kt_jvm_binary`'s `.jdeps`) that is
+    # not itself a jar and is left for `jar_outputs()` to skip.
+    "java_binary": jar_outputs(),
+    "java_test": jar_outputs(),
+    "java_library": jar_outputs(),
+    "java_import": jar_outputs(),
+    "kt_jvm_binary": jar_outputs(),
+    "kt_jvm_test": jar_outputs(),
+    "kt_jvm_library": jar_outputs(),
+    "kt_jvm_import": jar_outputs(),
+    "scala_binary": jar_outputs(),
+    "scala_test": jar_outputs(),
+    "scala_repl": jar_outputs(),
+    "scala_library": jar_outputs(),
+    "scala_macro_library": jar_outputs(),
+    "scala_import": jar_outputs(),
+
     # --- rules_zig ----------------------------------------------------------
     "zig_binary": executable(),
     "zig_test": executable(),
@@ -243,25 +292,6 @@ RULE_KINDS = {
         "liable to corrupt",
     ),
     "py_test": not_native("as py_binary"),
-    "java_binary": not_native(
-        "a shell stub beside a `.jar`, or on Windows the same appended-blob " +
-        "launcher as py_binary",
-    ),
-    "java_test": not_native("as java_binary"),
-
-    # Every JVM ruleset builds on the same launcher shape as `java_binary`,
-    # and each needs its own row: the table is keyed by `ctx.rule.kind`, so
-    # `java_binary`'s row does not speak for a rule that merely resembles it.
-    # Omitting these is not harmless. On Windows `scala_binary` reports a
-    # `<name>.exe` stub, which -- unclassified -- reaches the fallback that
-    # reads a name, matches `.exe`, and is signed embedded by osslsigncode:
-    # exactly the appended-blob launcher the `py_binary` row above warns
-    # Authenticode corrupts.
-    "kt_jvm_binary": not_native("a JVM launcher beside a `.jar`, as java_binary"),
-    "kt_jvm_test": not_native("as kt_jvm_binary"),
-    "scala_binary": not_native("a JVM launcher beside a `.jar`, as java_binary"),
-    "scala_test": not_native("as scala_binary"),
-    "scala_repl": not_native("as scala_binary"),
     "sh_binary": not_native("a shell script, or on Windows a stub launcher"),
     "sh_test": not_native("as sh_binary"),
     # Not proven with a live fixture: rules_perl's bzlmod extension always
@@ -281,7 +311,6 @@ RULE_KINDS = {
     "rust_static_library": not_native("a static archive"),
     "swift_library": not_native("a static archive plus Swift module files"),
     "go_library": not_native("a Go archive, which is not an ar archive"),
-    "java_library": not_native("a `.jar`, which is a zip"),
     "pkg_tar_impl": not_native("a tar archive"),
     "pkg_zip_impl": not_native("a zip archive"),
 }
@@ -304,6 +333,9 @@ def is_all_outputs_entry(entry):
 
 def is_not_native_entry(entry):
     return entry.kind == _NOT_NATIVE
+
+def is_jar_outputs_entry(entry):
+    return entry.kind == _JAR_OUTPUTS
 
 def is_forward_entry(entry):
     return entry.kind == _FORWARD

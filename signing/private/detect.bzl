@@ -36,6 +36,7 @@ load(
     "is_all_outputs_entry",
     "is_executable_entry",
     "is_forward_entry",
+    "is_jar_outputs_entry",
     "is_not_native_entry",
     "MACHO",
     "NOT_NATIVE",
@@ -51,7 +52,7 @@ BinaryFormatInfo = provider(
     doc = "Maps each of a target's Files to the native binary format it will " +
           "be built as, for the files that are native binaries at all.",
     fields = {
-        "formats": "dict of File to format string (`pe` or `macho`).",
+        "formats": "dict of File to format string (`pe`, `macho` or `jar`).",
     },
 )
 
@@ -162,6 +163,14 @@ def _aspect_impl(target, ctx):
     elif is_all_outputs_entry(entry):
         for f in outputs:
             formats[f] = verdict
+    elif is_jar_outputs_entry(entry):
+        # Only the `.jar` files are jarsigner-signable; a launcher script or
+        # `.jdeps` beside them is left unclassified rather than given this
+        # verdict, so it falls to being judged by its own name instead (which
+        # ordinarily says nothing, routing it to a detached signature).
+        for f in outputs:
+            if f.extension == "jar":
+                formats[f] = verdict
 
     return [BinaryFormatInfo(formats = formats)]
 
@@ -187,7 +196,7 @@ def binary_formats(target):
         target: a Target the `binary_format_aspect` was applied to.
 
     Returns:
-        A dict keyed by `File`, holding `PE` or `MACHO`. Files that are not
+        A dict keyed by `File`, holding `PE`, `MACHO` or `JAR`. Files that are not
         native binaries are absent rather than present with an empty value.
     """
     if BinaryFormatInfo not in target:
