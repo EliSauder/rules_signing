@@ -33,10 +33,12 @@ does not stop being recognisable for having been through one.
 
 A rule that is *not* in this table produces no native binaries as far as
 signing is concerned, which is the right answer for scripts, archives and
-data. Entries like `py_binary` below are therefore not no-ops: they are
-`not_native()`, recording that the omission was a decision rather than an
-oversight, since a `py_binary` is executable and would otherwise look like a
-plausible thing to add.
+data -- as long as nothing it emits happens to be named like a native binary
+that a fallback by extension would misread. Entries like `py_binary` below
+are `not_native()`, which conclusively marks every output NOT_NATIVE instead
+of relying on that being true by omission: it is what stops the Windows stub
+those rules name `<name>.exe` from being read by that name and handed to a
+native signer.
 """
 
 # Formats a native signer exists for. ELF is deliberately absent: Linux
@@ -120,11 +122,15 @@ def forward(*attrs, **kwargs):
     )
 
 def not_native(reason = ""):
-    """The rule produces nothing a native signer can sign.
+    """The rule's outputs are conclusively not native binaries.
 
-    Recording this has no effect on detection -- an absent rule is treated
-    the same way. It exists so that a rule which *looks* like it belongs here
-    is visibly known about, rather than looking like it was forgotten.
+    Unlike an absent rule, this is not silence: every file the rule reports
+    in `DefaultInfo` is recorded as `NOT_NATIVE`, the same forced verdict
+    `forward(output_names_are_evidence = False)` gives a copy rule that names
+    its own outputs. That is what keeps a launcher a ruleset names `<name>.exe`
+    on Windows -- `sh_binary`, `py_binary`, `java_binary` and the rest all do
+    this for their Windows stub -- from being read by that name afterwards
+    and handed to a native signer it was never meant for.
 
     Args:
         reason: why, quoted in documentation and nothing else.
@@ -242,6 +248,20 @@ RULE_KINDS = {
         "launcher as py_binary",
     ),
     "java_test": not_native("as java_binary"),
+
+    # Every JVM ruleset builds on the same launcher shape as `java_binary`,
+    # and each needs its own row: the table is keyed by `ctx.rule.kind`, so
+    # `java_binary`'s row does not speak for a rule that merely resembles it.
+    # Omitting these is not harmless. On Windows `scala_binary` reports a
+    # `<name>.exe` stub, which -- unclassified -- reaches the fallback that
+    # reads a name, matches `.exe`, and is signed embedded by osslsigncode:
+    # exactly the appended-blob launcher the `py_binary` row above warns
+    # Authenticode corrupts.
+    "kt_jvm_binary": not_native("a JVM launcher beside a `.jar`, as java_binary"),
+    "kt_jvm_test": not_native("as kt_jvm_binary"),
+    "scala_binary": not_native("a JVM launcher beside a `.jar`, as java_binary"),
+    "scala_test": not_native("as scala_binary"),
+    "scala_repl": not_native("as scala_binary"),
     "sh_binary": not_native("a shell script, or on Windows a stub launcher"),
     "sh_test": not_native("as sh_binary"),
     # Not proven with a live fixture: rules_perl's bzlmod extension always
@@ -267,21 +287,23 @@ RULE_KINDS = {
 }
 
 def lookup(kind):
-    """The entry for `kind`, or None when it produces no native binary.
+    """The entry for `kind`, or None when the rule is not in the table.
 
-    A rule that is absent and a rule recorded as `not_native` are the same
-    answer, which is why both come back as None.
+    A rule recorded as `not_native` is *not* the same as an absent one: it
+    comes back as a real entry the aspect must still classify with, so that
+    every one of its outputs is conclusively marked, not merely left silent
+    for an extension to judge afterwards.
     """
-    entry = RULE_KINDS.get(kind)
-    if entry == None or entry.kind == _NOT_NATIVE:
-        return None
-    return entry
+    return RULE_KINDS.get(kind)
 
 def is_executable_entry(entry):
     return entry.kind == _EXECUTABLE
 
 def is_all_outputs_entry(entry):
     return entry.kind == _ALL_OUTPUTS
+
+def is_not_native_entry(entry):
+    return entry.kind == _NOT_NATIVE
 
 def is_forward_entry(entry):
     return entry.kind == _FORWARD

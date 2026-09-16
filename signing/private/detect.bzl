@@ -36,6 +36,7 @@ load(
     "is_all_outputs_entry",
     "is_executable_entry",
     "is_forward_entry",
+    "is_not_native_entry",
     "MACHO",
     "NOT_NATIVE",
     "PE",
@@ -135,6 +136,16 @@ def _aspect_impl(target, ctx):
 
     if is_forward_entry(entry):
         return [BinaryFormatInfo(formats = _forwarded(ctx, entry, outputs))]
+
+    if is_not_native_entry(entry):
+        # Conclusive for every output, not just the executable: a rule like
+        # `sh_binary` can report a Windows launcher named `<name>.exe`
+        # alongside outputs an extension check would read correctly on its
+        # own, and the whole set has to be marked so none of them falls
+        # through to being judged by name.
+        for f in outputs:
+            formats[f] = NOT_NATIVE
+        return [BinaryFormatInfo(formats = formats)]
 
     fmt = entry.format if entry.format else _platform_format(ctx)
 

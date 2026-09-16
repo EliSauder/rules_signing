@@ -83,6 +83,39 @@ class SignOutputShapeTest(unittest.TestCase):
         for rel, path in outputs.items():
             self.assertTrue(path.exists(), f"declared but not produced: {rel}")
 
+    def assert_every_output_is_detached(self, case: str) -> None:
+        """Asserts nothing in `case` was signed in place.
+
+        Named outputs are deliberately not spelled out here. Which files a
+        third-party binary rule reports varies by platform in ways that are
+        that rule's business and not this project's contract -- `sh_binary`
+        adds a `<name>.exe` stub on Windows beside the bare name it reports
+        everywhere, `scala_binary` replaces the bare name with one -- and
+        pinning those names tests the ruleset rather than the registry.
+
+        What a `not_native()` row promises is exactly this invariant: every
+        file the rule produces gets a detached signature, so none of them was
+        routed to a native signer. A launcher stub that reached osslsigncode
+        would appear here as a file with no sidecars, which is the bug these
+        fixtures exist to catch.
+        """
+
+        outputs = _outputs(case)
+        signed = [
+            rel for rel in outputs
+            if not any(rel.endswith(suffix) for suffix in _SIDECARS)
+        ]
+        self.assertTrue(signed, f"{case} declared no signed outputs")
+        for rel in signed:
+            for suffix in _SIDECARS:
+                self.assertIn(
+                    rel + suffix,
+                    outputs,
+                    f"{rel} has no {suffix}, so it was signed in place",
+                )
+        for rel, path in outputs.items():
+            self.assertTrue(path.exists(), f"declared but not produced: {rel}")
+
     def test_native_signature_replaces_the_file_and_adds_nothing(self) -> None:
         """A PE is signed in place, so the signed file is the whole output."""
 
@@ -138,49 +171,34 @@ class SignOutputShapeTest(unittest.TestCase):
     def test_a_shell_script_is_not_natively_signed(self) -> None:
         """`sh_binary` is executable, and gets a detached signature anyway.
 
-        A real rules_shell target, not a hypothesis: it is excluded from the
-        registry by a `not_native()` row, and this proves that decision holds
-        against the rule it actually describes.
+        A real rules_shell target, not a hypothesis: it is covered by a
+        `not_native()` row, and this proves that decision holds against the
+        rule it actually describes -- including the `<name>.exe` stub the
+        rule adds on Windows, which is the output an extension check would
+        otherwise hand to osslsigncode.
         """
 
-        self.assert_outputs(
-            "shell_greeting",
-            {
-                "signing/tests/shell_greeting": _SIDECARS,
-                "signing/tests/testdata_bin/greeting.sh": _SIDECARS,
-            },
-        )
+        self.assert_every_output_is_detached("shell_greeting")
 
     def test_a_jvm_launcher_is_not_natively_signed(self) -> None:
-        """`kt_jvm_binary`'s jar and jdeps both get sidecars, not embedding.
+        """`kt_jvm_binary`'s outputs all get sidecars, not embedding.
 
-        A real rules_kotlin target. Nothing here is a native binary -- a jar
-        is a zip -- so both of the rule's outputs are left to cosign.
+        A real rules_kotlin target. Nothing it produces is a native binary --
+        a jar is a zip -- so every output is left to cosign.
         """
 
-        self.assert_outputs(
-            "kotlin_greeting",
-            {
-                "signing/tests/kotlin_greeting.jar": _SIDECARS,
-                "signing/tests/kotlin_greeting.jdeps": _SIDECARS,
-            },
-        )
+        self.assert_every_output_is_detached("kotlin_greeting")
 
     def test_a_scala_launcher_is_not_natively_signed(self) -> None:
         """As kotlin_greeting, for a real rules_scala target.
 
-        `scala_binary` additionally emits a bare launcher script beside its
-        jar -- the same shape a `java_binary` takes on Unix -- and it too
-        gets sidecars rather than an embedded signature.
+        This is the fixture that caught `scala_binary` missing from the
+        registry: on Windows the rule reports a `<name>.exe` launcher, which
+        with no row to speak for it fell through to being judged by name and
+        was signed in place by osslsigncode.
         """
 
-        self.assert_outputs(
-            "scala_greeting",
-            {
-                "signing/tests/scala_greeting.jar": _SIDECARS,
-                "signing/tests/scala_greeting": _SIDECARS,
-            },
-        )
+        self.assert_every_output_is_detached("scala_greeting")
 
     def test_a_name_a_rule_invented_does_not_decide_the_signer(self) -> None:
         """An ELF called `.exe` is not signed as a Windows PE.
