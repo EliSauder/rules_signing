@@ -17,6 +17,9 @@ load(
 )
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@bazel_skylib//rules:native_binary.bzl", "native_binary")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_kotlin//kotlin:jvm.bzl", "kt_jvm_binary")
+load("@rules_scala//scala:scala.bzl", "scala_binary")
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image")
@@ -865,6 +868,12 @@ py_test(
         "signing/tests/signed_mixed_group.signed",
         "--case=elf_named_exe::$(rootpath :signed_elf_named_exe_outputs)::" +
         "signing/tests/signed_elf_named_exe.signed",
+        "--case=shell_greeting::$(rootpath :signed_shell_greeting_outputs)::" +
+        "signing/tests/signed_shell_greeting.signed",
+        "--case=kotlin_greeting::$(rootpath :signed_kotlin_greeting_outputs)::" +
+        "signing/tests/signed_kotlin_greeting.signed",
+        "--case=scala_greeting::$(rootpath :signed_scala_greeting_outputs)::" +
+        "signing/tests/signed_scala_greeting.signed",
         "--case=unsigned::$(rootpath :signed_default_outputs)::" +
         "signing/tests/signed_default.signed",
         "--case=tree::$(rootpath :signed_real_blob_tree_outputs)::" +
@@ -885,6 +894,12 @@ py_test(
         ":signed_real_blob_tree_outputs",
         ":signed_elf_named_exe",
         ":signed_elf_named_exe_outputs",
+        ":signed_kotlin_greeting",
+        ":signed_kotlin_greeting_outputs",
+        ":signed_scala_greeting",
+        ":signed_scala_greeting_outputs",
+        ":signed_shell_greeting",
+        ":signed_shell_greeting_outputs",
         ":signed_mixed_group",
         ":signed_mixed_group_outputs",
         ":signed_real_blobs",
@@ -1109,4 +1124,73 @@ sign(
 file_name_manifest(
     name = "signed_elf_named_exe_outputs",
     srcs = [":signed_elf_named_exe"],
+)
+
+# ---------------------------------------------------------------------------
+# not_native() rows, proven against real rules
+#
+# Each of these is executable and would look like a plausible addition to the
+# registry. Signing them with the shared development certificate proves the
+# `not_native()` row holds against the real rule, not just a hypothesis:
+# every one of them gets a detached signature and none reaches a native
+# signer.
+# ---------------------------------------------------------------------------
+
+# --- rules_shell ------------------------------------------------------------
+sh_binary(
+    name = "shell_greeting",
+    srcs = ["testdata_bin/greeting.sh"],
+)
+
+sign(
+    name = "signed_shell_greeting",
+    src = ":shell_greeting",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+file_name_manifest(
+    name = "signed_shell_greeting_outputs",
+    srcs = [":signed_shell_greeting"],
+)
+
+# --- rules_kotlin -------------------------------------------------------
+kt_jvm_binary(
+    name = "kotlin_greeting",
+    srcs = ["testdata_bin/Greeting.kt"],
+    main_class = "GreetingKt",
+)
+
+sign(
+    name = "signed_kotlin_greeting",
+    src = ":kotlin_greeting",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+file_name_manifest(
+    name = "signed_kotlin_greeting_outputs",
+    srcs = [":signed_kotlin_greeting"],
+)
+
+# --- rules_scala ----------------------------------------------------------
+scala_binary(
+    name = "scala_greeting",
+    srcs = ["testdata_bin/Greeting.scala"],
+    main_class = "Greeting",
+)
+
+sign(
+    name = "signed_scala_greeting",
+    src = ":scala_greeting",
+    certificate = ":dev_cert_generic_pem",
+    description = SIGNED_DESCRIPTION,
+    url = SIGNED_URL,
+)
+
+file_name_manifest(
+    name = "signed_scala_greeting_outputs",
+    srcs = [":signed_scala_greeting"],
 )

@@ -135,6 +135,53 @@ class SignOutputShapeTest(unittest.TestCase):
             },
         )
 
+    def test_a_shell_script_is_not_natively_signed(self) -> None:
+        """`sh_binary` is executable, and gets a detached signature anyway.
+
+        A real rules_shell target, not a hypothesis: it is excluded from the
+        registry by a `not_native()` row, and this proves that decision holds
+        against the rule it actually describes.
+        """
+
+        self.assert_outputs(
+            "shell_greeting",
+            {
+                "signing/tests/shell_greeting": _SIDECARS,
+                "signing/tests/testdata_bin/greeting.sh": _SIDECARS,
+            },
+        )
+
+    def test_a_jvm_launcher_is_not_natively_signed(self) -> None:
+        """`kt_jvm_binary`'s jar and jdeps both get sidecars, not embedding.
+
+        A real rules_kotlin target. Nothing here is a native binary -- a jar
+        is a zip -- so both of the rule's outputs are left to cosign.
+        """
+
+        self.assert_outputs(
+            "kotlin_greeting",
+            {
+                "signing/tests/kotlin_greeting.jar": _SIDECARS,
+                "signing/tests/kotlin_greeting.jdeps": _SIDECARS,
+            },
+        )
+
+    def test_a_scala_launcher_is_not_natively_signed(self) -> None:
+        """As kotlin_greeting, for a real rules_scala target.
+
+        `scala_binary` additionally emits a bare launcher script beside its
+        jar -- the same shape a `java_binary` takes on Unix -- and it too
+        gets sidecars rather than an embedded signature.
+        """
+
+        self.assert_outputs(
+            "scala_greeting",
+            {
+                "signing/tests/scala_greeting.jar": _SIDECARS,
+                "signing/tests/scala_greeting": _SIDECARS,
+            },
+        )
+
     def test_a_name_a_rule_invented_does_not_decide_the_signer(self) -> None:
         """An ELF called `.exe` is not signed as a Windows PE.
 

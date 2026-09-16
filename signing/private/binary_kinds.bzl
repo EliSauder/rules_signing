@@ -199,7 +199,10 @@ RULE_KINDS = {
 
     # --- rules_haskell ------------------------------------------------------
     # Macro-wrapped: the public `haskell_binary` is a macro over a rule whose
-    # name carries a leading underscore.
+    # name carries a leading underscore. Read from source rather than proven
+    # with a live fixture: rules_haskell 1.0 does not load under Bazel 9.1 --
+    # it still calls the native `sh_binary`, which Bazel 9 removed -- so this
+    # repository cannot build one to check.
     "_haskell_binary": executable(),
     "_haskell_test": executable(),
     "haskell_cabal_binary": executable(),
@@ -241,6 +244,15 @@ RULE_KINDS = {
     "java_test": not_native("as java_binary"),
     "sh_binary": not_native("a shell script, or on Windows a stub launcher"),
     "sh_test": not_native("as sh_binary"),
+    # Not proven with a live fixture: rules_perl's bzlmod extension always
+    # registers its repos as a non-dev dependency of whichever module calls
+    # it (bazel-contrib/rules_perl's `perl_repositories` hardcodes
+    # `root_module_direct_deps = "all"`, unlike bazel_skylib's
+    # `modules.use_all_repos`, which checks first). A dev-only ruleset using
+    # it as a dev dependency cannot stay root-buildable, so this row is read
+    # from source rather than built here.
+    "perl_binary": not_native("a script wrapping the perl interpreter"),
+    "perl_test": not_native("as perl_binary"),
     "js_binary": not_native("a `.sh`/`.bat` launcher beside its JS sources"),
     "js_test": not_native("as js_binary"),
     "cc_library": not_native("static archives, which carry no signature"),

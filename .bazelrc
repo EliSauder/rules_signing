@@ -30,3 +30,16 @@ common --enable_platform_specific_config
 build:linux --workspace_status_command=tools/workspace_status.py
 build:macos --workspace_status_command=tools/workspace_status.py
 build:windows --workspace_status_command=tools/workspace_status.bat
+
+# Only rules_kotlin (a dev-only fixture ruleset) forces a JDK to resolve; the
+# default `local_jdk` toolchain fails immediately on a runner with no JDK
+# installed, since resolving that toolchain is unconditional even for targets
+# that never build one. A pinned remote JDK keeps the fixture hermetic and
+# does not affect anything consuming this module, since .bazelrc is never
+# inherited by a dependent's own build.
+build --java_runtime_version=remotejdk_17
+
+# rules_scala's protobuf dep otherwise builds protoc from source through the
+# legacy native proto rule path, which does not consult the prebuilt protoc
+# toolchain registered above.
+build --incompatible_enable_proto_toolchain_resolution
