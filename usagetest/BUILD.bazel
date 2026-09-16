@@ -44,7 +44,7 @@ py_test(
     name = "verify_outputs_test",
     size = "small",
     srcs = ["verify_outputs_test.py"],
-    args = ["--signed-outputs=$(rootpath :signed_outputs)"] + select({
+    args = ["$(rootpaths :signed_outputs)"] + select({
         "@platforms//os:windows": [],
         "//conditions:default": ["--signed-oci-image=$(rootpath :signed_oci_image)"],
     }),

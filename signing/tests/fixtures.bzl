@@ -151,3 +151,37 @@ embedded_sign = rule(
     }, **dict(SIGNING_ATTRS, **STAMP_ATTRS)),
     toolchains = SIGNING_TOOLCHAINS,
 )
+
+def _pick_file_impl(ctx):
+    matches = [
+        f
+        for f in ctx.attr.src[DefaultInfo].files.to_list()
+        if f.short_path.endswith(ctx.attr.suffix)
+    ]
+    if len(matches) != 1:
+        fail("pick_file: {} of {}'s files end with {}: {}".format(
+            len(matches),
+            ctx.attr.src.label,
+            repr(ctx.attr.suffix),
+            [f.short_path for f in matches],
+        ))
+    return [DefaultInfo(
+        files = depset(matches),
+        runfiles = ctx.runfiles(files = matches),
+    )]
+
+pick_file = rule(
+    implementation = _pick_file_impl,
+    doc = "Test fixture: names one file out of a target that has several, so " +
+          "a test can take its `$(rootpath)`. `sign` produces one output per " +
+          "source rather than a single directory, which is what makes the " +
+          "individual files addressable in the first place; they are not " +
+          "predeclared, so they have no labels of their own.",
+    attrs = {
+        "src": attr.label(mandatory = True, providers = [[DefaultInfo]]),
+        "suffix": attr.string(
+            mandatory = True,
+            doc = "Path suffix that matches exactly one of `src`'s files.",
+        ),
+    },
+)

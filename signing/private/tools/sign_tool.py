@@ -212,24 +212,31 @@ def replace_path(src: str, dst: str) -> None:
 
 
 def load_rel_src_manifest(path: str) -> list:
-    """Reads (relpath, src) pairs written by sign.bzl's `rel_src_manifest`.
+    """Reads (relpath, src, signer) rows written by sign.bzl's `rel_src_manifest`.
 
-    The pairs travel through a file instead of repeated --rel/--src argv
+    The rows travel through a file instead of repeated --rel/--src argv
     tokens so that file names are never subject to the OS's native
     command-line encoding (notably Windows' ANSI code page, which cannot
     represent every Unicode character); reading the manifest as UTF-8 text
     keeps names intact on every platform.
+
+    `signer` names the tool whose outputs the caller has already declared for
+    that source, and is empty when the caller declared a directory whose
+    contents are ours to decide.
     """
 
-    pairs = []
+    rows = []
     if not path:
-        return pairs
+        return rows
     for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
         if not line:
             continue
-        relpath, _, src = line.partition("\t")
-        pairs.append((relpath, src))
-    return pairs
+        fields = line.split("\t")
+        relpath = fields[0]
+        src = fields[1] if len(fields) > 1 else ""
+        signer = fields[2] if len(fields) > 2 else ""
+        rows.append((relpath, src, signer))
+    return rows
 
 
 def parse_defaults(kvs: Iterable[str]) -> Dict[str, str]:
@@ -411,6 +418,11 @@ def cosign_env(password: str) -> Dict[str, str]:
 
 def passthrough(src: str, out: str) -> None:
     """Copies contents of source to out with no modifications"""
+    if os.path.exists(out) and os.path.realpath(src) == os.path.realpath(out):
+        # The file has already been produced at its destination (a native
+        # signature applied before a detached one is taken over the result),
+        # so there is nothing to copy and copying would truncate it.
+        return
     if pathlib.Path(src).is_dir():
         out_path = pathlib.Path(out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1018,6 +1030,24 @@ def sign_directory(
             identity=identity,
         )
 
+def native_tool_available(kind: str, args: argparse.Namespace) -> bool:
+    """Whether the signer for `kind` can actually be run in this build.
+
+    The native toolchains are optional, and a build that registered none of
+    them still signs everything cosign signs. The tool paths are therefore
+    checked rather than assumed, so reading a file's header can only ever add
+    a native signature the build is actually equipped to produce.
+    """
+
+    tool = {
+        "osslsigncode": args.osslsigncode_tool,
+        "codesign": args.codesign_tool,
+    }.get(kind, "")
+    if not tool:
+        return False
+    return os.path.exists(tool) or shutil.which(tool) is not None
+
+
 def sign_one(
     *,
     tool_mode: str,
@@ -1029,16 +1059,20 @@ def sign_one(
     password: str,
     identity: str,
     tmpdir: str = "",
+    signer: str = "",
 ) -> None:
-    selected = tool_mode
-    if selected == "auto":
-        # Pass the real path so extensionless Mach-O/PE binaries are detected
-        # from their header rather than falling through to a detached signature.
-        selected = detect_tool(relpath, infile)
-    if not selected:
-        selected = "cosign"
+    """Signs one source into `outfile`.
+
+    `signer` pins the choice the caller already made, and already declared
+    outputs for, so this cannot produce a different set of files than the one
+    it was asked for. Without it the signer is chosen here, which is the case
+    when walking a directory whose contents are nobody's declaration.
+    """
 
     if pathlib.Path(infile).is_dir():
+        selected = tool_mode
+        if selected == "auto":
+            selected = detect_tool(relpath, infile)
         sign_directory(
             selected=selected,
             tool_mode=tool_mode,
@@ -1053,6 +1087,27 @@ def sign_one(
         )
         return
 
+    if signer == "cosign":
+        sign_blob_and_maybe_native(
+            tool_mode=tool_mode,
+            infile=infile,
+            outfile=outfile,
+            args=args,
+            tmpdir=tmpdir,
+            cert_path=cert_path,
+            password=password,
+            identity=identity,
+        )
+        return
+
+    selected = signer or tool_mode
+    if selected == "auto":
+        # Pass the real path so extensionless Mach-O/PE binaries are detected
+        # from their header rather than falling through to a detached signature.
+        selected = detect_tool(relpath, infile)
+    if not selected:
+        selected = "cosign"
+
     sign_file(
         selected=selected,
         infile=infile,
@@ -1063,6 +1118,70 @@ def sign_one(
         password=password,
         identity=identity,
     )
+
+
+def sign_blob_and_maybe_native(
+    *,
+    tool_mode: str,
+    infile: str,
+    outfile: str,
+    args: argparse.Namespace,
+    cert_path: Optional[str],
+    password: str,
+    identity: str,
+    tmpdir: str = "",
+) -> None:
+    """Signs a file whose caller declared detached-signature outputs for it.
+
+    A name that names no native format is all analysis has to go on, so such
+    files are routed to cosign there. Under `--tool auto` the header is still
+    read here, because a Mach-O or PE binary can hide behind any name, and a
+    binary that is found gets its native signature too: applied first, with
+    the detached signature then taken over the signed result.
+
+    The native signature is therefore additive. Reading the header changes
+    what a file is signed with, never which files exist, which is what lets
+    these outputs be declared files rather than a directory whose contents
+    only become known now.
+    """
+
+    source = infile
+    if tool_mode == "auto":
+        native = sniff_binary_format(infile)
+        if native and native_tool_available(native, args):
+            sign_file(
+                selected=native,
+                infile=infile,
+                outfile=outfile,
+                args=args,
+                tmpdir=tmpdir,
+                cert_path=cert_path,
+                password=password,
+                identity=identity,
+            )
+            source = outfile
+
+    if getattr(args, "require_detached_signatures", False) and not cert_path:
+        raise SystemExit(
+            "sign_tool: '{}' is signed with a detached signature, and the "
+            ".sig and .bundle.json files it consists of were declared as "
+            "outputs of this target, but no certificate resolved so there is "
+            "nothing to sign it with.\n"
+            "Either make the certificate resolvable, or drop the "
+            "`certificate` attribute to build unsigned copies.".format(infile)
+        )
+
+    sign_blob_with_cosign(
+        tool=args.cosign_tool,
+        infile=source,
+        outfile=outfile,
+        tmpdir=tmpdir,
+        openssl=args.openssl_tool,
+        transparency_log=args.transparency_log,
+        cert_path=cert_path,
+        password=password,
+    )
+
 
 def resolve_cert_mode(args: argparse.Namespace) -> None:
     """Handles `--mode resolve-cert`.
@@ -1450,12 +1569,13 @@ def sign_mode(args: argparse.Namespace) -> None:
                 replace_path(target, outfile)
             return
 
-        rel_src_pairs = load_rel_src_manifest(args.rel_src_manifest)
+        rel_src_rows = load_rel_src_manifest(args.rel_src_manifest)
         pathlib.Path(args.out_dir).mkdir(parents=True, exist_ok=True)
-        for relpath, src in rel_src_pairs:
+        for relpath, src, signer in rel_src_rows:
             out = str(pathlib.Path(args.out_dir) / relpath)
             sign_one(
                 tool_mode=args.tool,
+                signer=signer,
                 relpath=relpath,
                 infile=src,
                 outfile=out,
@@ -1487,6 +1607,15 @@ def main() -> None:
     parser.add_argument("--out", default="")
     parser.add_argument("--out-dir", default="")
     parser.add_argument("--rel-src-manifest", default="")
+    parser.add_argument(
+        "--require-detached-signatures",
+        action="store_true",
+        help=(
+            "The caller declared the .sig/.bundle.json outputs of every "
+            "source routed to cosign, so failing to produce them is an error "
+            "rather than the unsigned-passthrough fallback."
+        ),
+    )
 
     parser.add_argument("--osslsigncode-tool", default="osslsigncode")
     parser.add_argument("--cosign-tool", default="")
