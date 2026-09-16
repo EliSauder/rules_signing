@@ -67,7 +67,7 @@ class SignatureVerificationTest(unittest.TestCase):
     def setUp(self):
         # The artifact lists come from the BUILD file, so an empty one would
         # turn a whole verification loop into a silent no-op.
-        for group in ("pe", "macho", "signed_blob", "shared_pe", "shared_blob"):
+        for group in ("pe", "macho", "signed_blob", "jar", "shared_pe", "shared_blob"):
             self.assertTrue(
                 getattr(_ARGS, group), "no artifacts passed for --{}".format(group)
             )
@@ -180,6 +180,29 @@ class SignatureVerificationTest(unittest.TestCase):
 
                 self.assertVerifiedBlob(bundle, signed)
 
+    def test_jar_signatures_are_valid_and_embedded(self):
+        for rootpath in _ARGS.jar:
+            with self.subTest(artifact=rootpath):
+                signed = _rlocation(rootpath)
+                self.assertTrue(os.path.isfile(signed), signed)
+
+                # No sidecar: jarsigner embeds the signature in the jar, so
+                # nothing beside it should exist to hand to a verifier.
+                self.assertFalse(os.path.exists(signed + ".sig"), signed + ".sig")
+                self.assertFalse(
+                    os.path.exists(signed + ".bundle.json"), signed + ".bundle.json"
+                )
+
+                # -strict is deliberately not passed: the dev certificate is
+                # self-signed, so jarsigner cannot build a path to a system
+                # trust anchor, which -strict would turn into a non-zero
+                # exit. That is a trust decision for a verifier to make, not
+                # proof the cryptographic signature itself is invalid --
+                # which is what this asserts.
+                result = _run([_ARGS.jarsigner, "-verify", signed])
+                self.assertSucceeded(result, "jarsigner -verify")
+                self.assertIn("jar verified", result.stdout + result.stderr)
+
     def test_oci_image_signature_is_valid(self):
         if _ARGS.signed_oci is None:
             self.skipTest("oci_image is excluded on this platform (rules_oci#827)")
@@ -216,9 +239,9 @@ class SignatureVerificationTest(unittest.TestCase):
         self.assertIn("Verified OK", result.stdout + result.stderr)
 
     def test_one_certificate_signs_for_every_tool(self):
-        """A single certificate drives osslsigncode, rcodesign and cosign.
+        """A single certificate drives osslsigncode, rcodesign, jarsigner and cosign.
 
-        The artifacts below were produced by three different signers from one
+        The artifacts below were produced by four different signers from one
         `certificate` target, so this fails if any signer stops accepting the
         shared credential -- which is the whole point of issuing it as a plain
         code-signing certificate rather than a tool-specific one.
@@ -264,6 +287,56 @@ class SignatureVerificationTest(unittest.TestCase):
                 self.assertVerifiedBlob(
                     blob + ".bundle.json", blob, _ARGS.shared_public_key
                 )
+
+        jar = _rlocation(_ARGS.shared_jar)
+        self.assertTrue(os.path.isfile(jar), jar)
+
+        # jarsigner has no `-CAfile`-style flag: trust for `-verify` comes
+        # from whatever keystore `-keystore` points at, or the JVM's own
+        # cacerts if none is given. Neither carries this development root, so
+        # one is built here -- a plain truststore holding only the root,
+        # exactly what a real deployment would ship to its own verifiers.
+        with tempfile.TemporaryDirectory() as tmp:
+            truststore = os.path.join(tmp, "truststore.p12")
+            result = _run([
+                _ARGS.keytool,
+                "-importcert",
+                "-noprompt",
+                "-trustcacerts",
+                "-alias",
+                "rules-signing-shared-root",
+                "-file",
+                root,
+                "-keystore",
+                truststore,
+                "-storetype",
+                "PKCS12",
+                "-storepass",
+                "changeit",
+            ])
+            self.assertSucceeded(result, "keytool -importcert")
+
+            result = _run([
+                _ARGS.jarsigner,
+                "-verify",
+                "-keystore",
+                truststore,
+                "-storepass",
+                "changeit",
+                jar,
+            ])
+            self.assertSucceeded(result, "jarsigner -verify")
+            self.assertIn("jar verified", result.stdout + result.stderr)
+
+            # The verifier trusts only the root, and the intermediate that
+            # closes the gap to the leaf is not in the truststore built
+            # above. Chaining to the root is therefore only possible if
+            # `ca_file` made it into the signature's own certificate chain --
+            # -strict is not passed because the truststore deliberately holds
+            # no alias for the leaf, which jarsigner separately (and
+            # harmlessly) warns about; that warning would otherwise mask the
+            # one this asserts against.
+            self.assertNotIn("PKIX path building failed", result.stdout + result.stderr)
 
     def test_transparency_log_config_is_accepted_by_the_real_cosign(self):
         """Guards the unit tests' cosign stub against CLI drift.
@@ -320,6 +393,8 @@ def parse_args(argv):
     parser.add_argument("--osslsigncode", required=True)
     parser.add_argument("--cosign", required=True)
     parser.add_argument("--codesign", required=True)
+    parser.add_argument("--jarsigner", required=True)
+    parser.add_argument("--keytool", required=True)
     parser.add_argument("--generic-ca", required=True)
     parser.add_argument("--cosign-public-key", required=True)
     parser.add_argument("--description", required=True)
@@ -329,6 +404,7 @@ def parse_args(argv):
     parser.add_argument("--macho", action="append", default=[])
     parser.add_argument("--app-bundle", required=True)
     parser.add_argument("--signed-blob", action="append", default=[])
+    parser.add_argument("--jar", action="append", default=[])
     # Omitted on Windows, where oci_image is excluded from the build because
     # of rules_oci's known Windows gaps (bazel-contrib/rules_oci#827).
     parser.add_argument("--signed-oci", default=None)
@@ -336,6 +412,7 @@ def parse_args(argv):
     parser.add_argument("--shared-public-key", required=True)
     parser.add_argument("--shared-pe", action="append", default=[])
     parser.add_argument("--shared-macho", required=True)
+    parser.add_argument("--shared-jar", required=True)
     parser.add_argument("--shared-blob", action="append", default=[])
     return parser.parse_known_args(argv)
 

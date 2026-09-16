@@ -15,6 +15,7 @@ load(
 )
 
 _CODESIGN_TOOLCHAIN = "@codesign.bzl//toolchain:toolchain_type"
+_JARSIGNER_TOOLCHAIN = "@bazel_tools//tools/jdk:runtime_toolchain_type"
 
 def _app_bundle_impl(ctx):
     out = ctx.actions.declare_directory(ctx.label.name)
@@ -89,6 +90,55 @@ no such filegroup and is selected per execution platform, so reaching the
 binary requires toolchain resolution inside a rule.
 """,
     toolchains = [config_common.toolchain_type(_CODESIGN_TOOLCHAIN, mandatory = False)],
+)
+
+def _jdk_tool_impl(ctx):
+    toolchain = ctx.toolchains[_JARSIGNER_TOOLCHAIN]
+    if toolchain == None or toolchain.java_runtime == None:
+        fail(
+            "no JDK runtime toolchain is registered; {} ships inside ".format(
+                ctx.attr.tool_name,
+            ) + "Bazel's own default JDK toolchain, so this is unexpected",
+        )
+
+    runtime = toolchain.java_runtime
+    names = (ctx.attr.tool_name, ctx.attr.tool_name + ".exe")
+    tool = None
+    for f in runtime.files.to_list():
+        if f.basename in names:
+            tool = f
+            break
+    if tool == None:
+        fail(
+            "the registered JDK toolchain has no {} binary; it is ".format(
+                ctx.attr.tool_name,
+            ) + "likely a JRE-only distribution",
+        )
+
+    # jarsigner and keytool are real dynamically-linked binaries, not
+    # self-contained scripts, so each needs the rest of the JDK tree alongside
+    # it at runtime -- the same reason `_jarsigner_tool_and_support_files` in
+    # action.bzl adds the whole `java_runtime.files` depset as action inputs,
+    # not just the one file.
+    return [DefaultInfo(
+        files = depset([tool]),
+        runfiles = ctx.runfiles(transitive_files = runtime.files),
+    )]
+
+jdk_tool = rule(
+    implementation = _jdk_tool_impl,
+    doc = """Exposes a binary from the JDK toolchain as a plain dependency.
+
+Unlike cosign/osslsigncode/codesign, jarsigner and keytool are resolved
+through Bazel's own default JDK runtime toolchain rather than a toolchain this
+project defines, so there is no dedicated repository or filegroup to depend on
+directly -- reaching the binary requires toolchain resolution inside a rule,
+same as codesign_tool.
+""",
+    attrs = {
+        "tool_name": attr.string(mandatory = True, values = ["jarsigner", "keytool"]),
+    },
+    toolchains = [config_common.toolchain_type(_JARSIGNER_TOOLCHAIN, mandatory = False)],
 )
 
 # ---------------------------------------------------------------------------

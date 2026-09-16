@@ -116,7 +116,39 @@ class SignOutputShapeTest(unittest.TestCase):
         for rel, path in outputs.items():
             self.assertTrue(path.exists(), f"declared but not produced: {rel}")
 
-    def test_native_signature_replaces_the_file_and_adds_nothing(self) -> None:
+    def assert_jvm_jar_is_embedded(self, case: str) -> None:
+        """Asserts a JVM target's `.jar` is embedded-signed; nothing else is.
+
+        A launcher's own name is not relied on here, for the same reason
+        `assert_every_output_is_detached` does not: it varies by platform
+        (`<name>.exe` on Windows, the bare name elsewhere for `scala_binary`,
+        a `.jdeps` manifest for the Kotlin/Scala toolchains). `.jar` does not
+        have that problem -- every JVM ruleset here names its jar output
+        literally -- so matching by extension is exact rather than a guess.
+        """
+
+        outputs = _outputs(case)
+        signed = [
+            rel for rel in outputs
+            if not any(rel.endswith(suffix) for suffix in _SIDECARS)
+        ]
+        self.assertTrue(signed, f"{case} declared no signed outputs")
+        jars = [rel for rel in signed if rel.endswith(".jar")]
+        self.assertTrue(jars, f"{case} declared no .jar output")
+        for rel in signed:
+            has_sidecars = all(rel + suffix in outputs for suffix in _SIDECARS)
+            if rel.endswith(".jar"):
+                self.assertFalse(
+                    has_sidecars, f"{rel} has sidecars, so it was not embedded-signed"
+                )
+            else:
+                self.assertTrue(
+                    has_sidecars, f"{rel} has no sidecars, so it was signed in place"
+                )
+        for rel, path in outputs.items():
+            self.assertTrue(path.exists(), f"declared but not produced: {rel}")
+
+
         """A PE is signed in place, so the signed file is the whole output."""
 
         self.assert_outputs(
@@ -180,25 +212,29 @@ class SignOutputShapeTest(unittest.TestCase):
 
         self.assert_every_output_is_detached("shell_greeting")
 
-    def test_a_jvm_launcher_is_not_natively_signed(self) -> None:
-        """`kt_jvm_binary`'s outputs all get sidecars, not embedding.
+    def test_a_jvm_jar_is_natively_signed_but_its_jdeps_is_not(self) -> None:
+        """`kt_jvm_binary`'s jar is embedded; its jdeps is not a jar.
 
-        A real rules_kotlin target. Nothing it produces is a native binary --
-        a jar is a zip -- so every output is left to cosign.
+        A real rules_kotlin target. The `.jar` is signed in place by
+        `jarsigner`, but `.jdeps` is not a jar -- it is a dependency manifest
+        the Kotlin toolchain writes beside it -- so it is left to cosign.
         """
 
-        self.assert_every_output_is_detached("kotlin_greeting")
+        self.assert_jvm_jar_is_embedded("kotlin_greeting")
 
-    def test_a_scala_launcher_is_not_natively_signed(self) -> None:
+    def test_a_scala_jar_is_natively_signed_but_its_launcher_is_not(self) -> None:
         """As kotlin_greeting, for a real rules_scala target.
 
-        This is the fixture that caught `scala_binary` missing from the
-        registry: on Windows the rule reports a `<name>.exe` launcher, which
-        with no row to speak for it fell through to being judged by name and
-        was signed in place by osslsigncode.
+        `scala_binary` additionally emits a launcher script beside its jar --
+        named `<name>.exe` on Windows, the bare name elsewhere -- and that
+        launcher is not a jar either, so it too is left to cosign while the
+        jar itself is signed in place by `jarsigner`. This is also the
+        fixture that caught `scala_binary` missing from the registry: with no
+        row to speak for it, that launcher fell through to being judged by
+        name and was signed in place by osslsigncode on Windows.
         """
 
-        self.assert_every_output_is_detached("scala_greeting")
+        self.assert_jvm_jar_is_embedded("scala_greeting")
 
     def test_a_name_a_rule_invented_does_not_decide_the_signer(self) -> None:
         """An ELF called `.exe` is not signed as a Windows PE.

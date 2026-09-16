@@ -36,6 +36,7 @@ load(
     "is_all_outputs_entry",
     "is_executable_entry",
     "is_forward_entry",
+    "is_jar_outputs_entry",
     "is_not_native_entry",
     "MACHO",
     "NOT_NATIVE",
@@ -51,7 +52,7 @@ BinaryFormatInfo = provider(
     doc = "Maps each of a target's Files to the native binary format it will " +
           "be built as, for the files that are native binaries at all.",
     fields = {
-        "formats": "dict of File to format string (`pe` or `macho`).",
+        "formats": "dict of File to format string (`pe`, `macho` or `jar`).",
     },
 )
 
@@ -162,6 +163,15 @@ def _aspect_impl(target, ctx):
     elif is_all_outputs_entry(entry):
         for f in outputs:
             formats[f] = verdict
+    elif is_jar_outputs_entry(entry):
+        # Only the `.jar` files are jarsigner-signable, but the rest of the
+        # rule's outputs still get a verdict rather than being left silent.
+        # A launcher stub or `.jdeps` beside the jar is conclusively not a
+        # native binary, and saying so is what stops the `<name>.exe` stub
+        # `scala_binary` reports on Windows from being read by that name
+        # afterwards and handed to osslsigncode, which would corrupt it.
+        for f in outputs:
+            formats[f] = verdict if f.extension == "jar" else NOT_NATIVE
 
     return [BinaryFormatInfo(formats = formats)]
 
@@ -187,7 +197,7 @@ def binary_formats(target):
         target: a Target the `binary_format_aspect` was applied to.
 
     Returns:
-        A dict keyed by `File`, holding `PE` or `MACHO`. Files that are not
+        A dict keyed by `File`, holding `PE`, `MACHO` or `JAR`. Files that are not
         native binaries are absent rather than present with an empty value.
     """
     if BinaryFormatInfo not in target:
