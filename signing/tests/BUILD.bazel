@@ -27,6 +27,21 @@ filegroup(
     srcs = glob(["testdata_sign/docs/**"]),
 )
 
+# A single plain-file `src`, several packages deep, matching the shape that
+# originally reproduced a bug: `sign` reproduced the package path
+# (`signing/tests/testdata_sign/docs/nested/...`) inside its output tree
+# instead of flattening to just the file's basename.
+filegroup(
+    name = "unsigned_single_nested_file",
+    srcs = ["testdata_sign/docs/nested/guide.txt"],
+)
+
+sign(
+    name = "signed_single_nested_file",
+    src = ":unsigned_single_nested_file",
+    certificate = ":cert_empty",
+)
+
 certificate(
     name = "cert_empty",
 )
@@ -94,6 +109,20 @@ make_tree(
 sign(
     name = "signed_mixed_tree",
     src = ":mixed_tree",
+)
+
+# Same directory, but signed alongside a sibling file so it is no longer the
+# sole source -- exercising the "keeps its own basename" path rather than the
+# single-directory flattening exception above.
+filegroup(
+    name = "mixed_tree_with_sibling_file",
+    srcs = [":mixed_tree", ":unsigned_single_nested_file"],
+)
+
+sign(
+    name = "signed_mixed_tree_with_sibling_file",
+    src = ":mixed_tree_with_sibling_file",
+    certificate = ":cert_empty",
 )
 
 # Real cross-compiled executables for content-based detection tests. Both are
@@ -560,11 +589,11 @@ py_test(
         "--pem-public-key=$(rootpath :self_signed_pem_cert_public_key)",
         "--p12-material=$(rootpath :self_signed_p12_cert_certificate)",
         "--p12-certificate=$(rootpath :self_signed_p12_cert_certificate_only)",
-        "--signed-pe=$(rootpath :signed_self_signed_pe)/signing/tests/hello.exe::" +
+        "--signed-pe=$(rootpath :signed_self_signed_pe)/hello.exe::" +
         "$(rootpath :self_signed_pem_cert_certificate_only)",
-        "--signed-pe=$(rootpath :signed_self_signed_pe_p12)/signing/tests/hello.exe::" +
+        "--signed-pe=$(rootpath :signed_self_signed_pe_p12)/hello.exe::" +
         "$(rootpath :self_signed_p12_cert_certificate_only)",
-        "--signed-blob=$(rootpath :signed_self_signed_blobs)/signing/tests/testdata_sign/docs/readme.txt",
+        "--signed-blob=$(rootpath :signed_self_signed_blobs)/readme.txt",
     ],
     data = [
         ":self_signed_p12_cert_certificate",
@@ -606,19 +635,23 @@ py_test(
         "--description='" + SIGNED_DESCRIPTION + "'",
         "--url=" + SIGNED_URL,
         "--identity=dev.rules-signing.hello",
-        # Paths inside a signed tree mirror the source's own layout, except
-        # when the whole tree is a single directory artifact, which is
-        # flattened to the root of the output.
-        "--pe=$(rootpath :signed_real_pe_pem)/signing/tests/hello.exe",
-        "--pe=$(rootpath :signed_real_pe_p12)/signing/tests/hello.exe",
-        "--pe=$(rootpath :signed_real_pe_base64)/signing/tests/hello.exe",
-        "--pe=$(rootpath :signed_real_pe_detected)/signing/tests/hello_pe",
+        # A plain file's package path is dropped and it is placed under its
+        # own basename at the tree's root. A directory source's own name
+        # becomes the top-level folder wrapping its preserved internal
+        # structure -- unless that directory is the *only* source, in which
+        # case its basename is dropped too and its contents are written
+        # directly at the tree's root (there is nothing else in the tree for
+        # it to collide with, so the wrapping folder would just be noise).
+        "--pe=$(rootpath :signed_real_pe_pem)/hello.exe",
+        "--pe=$(rootpath :signed_real_pe_p12)/hello.exe",
+        "--pe=$(rootpath :signed_real_pe_base64)/hello.exe",
+        "--pe=$(rootpath :signed_real_pe_detected)/hello_pe",
         "--pe=$(rootpath :signed_real_pe_embedded)",
-        "--macho=$(rootpath :signed_real_macho_pem)/signing/tests/hello_macho",
-        "--macho=$(rootpath :signed_real_macho_p12)/signing/tests/hello_macho",
+        "--macho=$(rootpath :signed_real_macho_pem)/hello_macho",
+        "--macho=$(rootpath :signed_real_macho_p12)/hello_macho",
         "--app-bundle=$(rootpath :signed_real_app_bundle)",
-        "--signed-blob=$(rootpath :signed_real_blobs)/signing/tests/testdata_sign/docs/readme.txt",
-        "--signed-blob=$(rootpath :signed_real_blobs)/signing/tests/testdata_sign/docs/nested/guide.txt",
+        "--signed-blob=$(rootpath :signed_real_blobs)/readme.txt",
+        "--signed-blob=$(rootpath :signed_real_blobs)/guide.txt",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/docs/readme.txt",
         "--signed-blob=$(rootpath :signed_real_blob_tree)/config.yaml",
         # The single certificate that drives all three signers. Verification
@@ -626,10 +659,10 @@ py_test(
         # inside each signature by way of the certificate's `ca_file`.
         "--shared-root=$(rootpath //signing/tests/testdata_certs:shared_root.crt)",
         "--shared-public-key=$(rootpath //signing/tests/testdata_certs:shared.pub)",
-        "--shared-pe=$(rootpath :signed_shared_pe)/signing/tests/hello.exe",
-        "--shared-macho=$(rootpath :signed_shared_macho)/signing/tests/hello_macho",
-        "--shared-blob=$(rootpath :signed_shared_blobs)/signing/tests/testdata_sign/docs/readme.txt",
-        "--shared-blob=$(rootpath :signed_shared_blobs_from_p12)/signing/tests/testdata_sign/docs/readme.txt",
+        "--shared-pe=$(rootpath :signed_shared_pe)/hello.exe",
+        "--shared-macho=$(rootpath :signed_shared_macho)/hello_macho",
+        "--shared-blob=$(rootpath :signed_shared_blobs)/readme.txt",
+        "--shared-blob=$(rootpath :signed_shared_blobs_from_p12)/readme.txt",
     ] + select({
         # oci_image (and anything depending on it) is target_compatible_with
         # excluded on Windows; see unsigned_oci_image for why.
@@ -697,12 +730,15 @@ py_test(
     data = [
         ":unsigned_files",
         ":unsigned_text_files",
+        ":unsigned_single_nested_file",
         ":signed_default",
         ":signed_out_override",
         ":signed_force_osslsigncode",
         ":signed_with_cert_template_path",
         ":signed_with_empty_certificate",
         ":signed_mixed_tree",
+        ":signed_mixed_tree_with_sibling_file",
+        ":signed_single_nested_file",
     ],
     args = [
         # "--tree=<tree rootpath>::<source root rootpath>" pairs each signed
@@ -716,6 +752,8 @@ py_test(
         "--tree=$(rootpath :signed_with_cert_template_path)::signing/tests/testdata_sign/docs",
         "--tree=$(rootpath :signed_with_empty_certificate)::signing/tests/testdata_sign/docs",
         "--mixed-tree=$(rootpath :signed_mixed_tree)",
+        "--mixed-tree-with-sibling=$(rootpath :signed_mixed_tree_with_sibling_file)",
+        "--single-file=$(rootpath :signed_single_nested_file)::$(rootpath :unsigned_single_nested_file)",
         "$(rootpaths :unsigned_files)",
         "$(rootpaths :unsigned_text_files)",
     ],

@@ -15,7 +15,10 @@ def _file_name_manifest_impl(ctx):
     paths = []
     for target in ctx.attr.srcs:
         for f in target[DefaultInfo].files.to_list():
-            paths.append(f.short_path)
+            # Mirrors sign()'s own behavior: every source lands at the
+            # output root under its own basename. This fixture only wraps
+            # plain files, so basename is the full expected output path.
+            paths.append(f.basename)
 
     # ctx.actions.write takes the content directly, so no name ever reaches a
     # shell. Sorted for a stable, reproducible output.
@@ -28,8 +31,8 @@ file_name_manifest = rule(
         "srcs": attr.label_list(
             mandatory = True,
             allow_files = True,
-            doc = "Targets whose files' short_paths are recorded.",
+            doc = "Targets whose files' expected sign() output paths are recorded.",
         ),
     },
-    doc = "Writes one file short_path per line, for tests to read as expectations.",
+    doc = "Writes one expected sign() output path per line (see `_file_name_manifest_impl`).",
 )

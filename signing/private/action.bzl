@@ -428,7 +428,7 @@ def signing_argv(
         ])
     return argv
 
-def rel_src_manifest(ctx, srcs, name = None, flatten_single_directory = None):
+def rel_src_manifest(ctx, srcs, name = None):
     """Writes the manifest that pairs each source with its output-relative path.
 
     Passing each (relpath, src) pair as separate `--rel`/`--src` argv tokens
@@ -439,23 +439,44 @@ def rel_src_manifest(ctx, srcs, name = None, flatten_single_directory = None):
     content, which Bazel always writes and Python always reads as UTF-8,
     sidestepping the OS argv encoding entirely.
 
+    Every source in `srcs` is placed at the output tree's root under its own
+    basename -- never under its (package-relative) `short_path`. For a plain
+    file that just means the file itself, flat. For a directory artifact,
+    the directory's basename becomes a folder at the tree's root and its
+    existing internal structure is preserved beneath it (the directory can
+    carry real structure of its own -- an installer's file tree, an OCI image
+    layout -- that has to survive; only the *source's package path leading
+    to* the directory is dropped, matching what happens to a plain file).
+
+    The one exception: when `srcs` is a single directory artifact (a `sign()`
+    target whose `src` produced exactly one directory, and nothing else),
+    that directory's own basename is dropped too and its contents are
+    written directly at the output tree's root -- `sign()`'s output *is* the
+    signed version of that directory, so there is no sibling for it to
+    collide with and no reason to add an extra wrapping folder.
+
     Args:
         ctx: the rule context.
         srcs: the Files to sign.
         name: base name for the manifest file; defaults to the target name.
-        flatten_single_directory: when a lone directory artifact is signed,
-            write its contents at the root of the output directory instead of
-            nesting them under the directory's own name. Defaults to doing so.
 
     Returns:
         The manifest `File`.
     """
-    if flatten_single_directory == None:
-        flatten_single_directory = len(srcs) == 1 and srcs[0].is_directory
+    flatten_single_directory = len(srcs) == 1 and srcs[0].is_directory
 
     lines = []
+    seen = {}
     for f in srcs:
-        relpath = "" if flatten_single_directory and f.is_directory else f.short_path
+        relpath = "" if flatten_single_directory else f.basename
+        if relpath in seen:
+            fail((
+                "rules_signing: '{}' and '{}' would both be signed to the " +
+                "same output path '{}'. Sources are placed under their own " +
+                "basename, so two sources sharing a basename collide; " +
+                "rename one of them."
+            ).format(seen[relpath], f.short_path, relpath))
+        seen[relpath] = f.short_path
         lines.append("{}\t{}".format(relpath, f.path))
 
     out = ctx.actions.declare_file(

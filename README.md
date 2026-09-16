@@ -1,11 +1,16 @@
 # rules_signing
 
-`rules_signing` wraps outputs from another Bazel target, signs supported artifacts, and returns the same relative file structure with signed outputs.
+`rules_signing` wraps outputs from another Bazel target, signs supported artifacts, and returns them in a single output tree artifact.
 
 ## What works now
 
 - Wrap any target that exposes `DefaultInfo.files`.
-- Preserve source output layout (relative paths) in a single output tree artifact.
+- Place every output from `src` in a single output tree artifact under its
+  own basename, never under its source package path; a directory output's
+  own internal structure is preserved beneath its basename. The one
+  exception: if `src` produces exactly one output and it is a directory,
+  that directory's basename is dropped too, and its contents are written
+  directly at the tree's root.
 - Auto-select signer by file extension, then by file contents:
   - `osslsigncode`: `.exe`, `.dll`, `.msi`, `.sys`, and related Windows script/package extensions.
   - `codesign`: `.app`, `.pkg`, `.dmg`.
@@ -123,7 +128,7 @@ sign(
 )
 ```
 
-The `sign` target emits a **directory artifact** containing the signed/copied files under the same relative paths as the wrapped target.
+The `sign` target emits a **directory artifact**. Every output from `src` is placed under its own basename in that tree, never under its source package path; a directory output's own internal structure is preserved beneath its basename (so, for example, `mixed_tree` -> `mixed_tree/bin/app.exe`). The one exception: if `src` produces exactly one output and it is a directory, that directory's basename is dropped too and its contents are written directly at the tree's root (so signing a lone `mixed_tree` would produce `bin/app.exe`, not `mixed_tree/bin/app.exe`).
 
 For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs. Note that with `tool = "auto"` any directory artifact requires every signing toolchain to be registered — see [Setup](#setup).
 

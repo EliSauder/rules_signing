@@ -20,7 +20,15 @@ def _sign_impl(ctx):
 
 sign = rule(
     implementation = _sign_impl,
-    doc = "Signs all files from `src`, preserving relative output structure.",
+    doc = (
+        "Signs all files from `src`. Every source is placed in the output " +
+        "tree under its own basename, never under its source package " +
+        "path; a directory source's own internal structure is preserved " +
+        "beneath its basename. Exception: if `src` produces exactly one " +
+        "directory artifact and nothing else, that directory's basename " +
+        "is dropped too and its contents are written directly at the " +
+        "output tree's root."
+    ),
     attrs = dict({
         "src": attr.label(
             mandatory = True,
