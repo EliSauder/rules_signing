@@ -1,3 +1,65 @@
+_CODESIGN_BZL_TOOLCHAIN = "@codesign.bzl//toolchain:toolchain_type"
+
+def _codesign_bzl_tool_impl(ctx):
+    tc = ctx.toolchains[_CODESIGN_BZL_TOOLCHAIN]
+    if tc == None:
+        fail(
+            "rules_signing: the default codesign adapter requires a codesign.bzl toolchain; " +
+            "register it with register_toolchains(\"@codesign.bzl//toolchain:all\"), " +
+            "or supply an rcodesign binary with codesign_toolchain(codesign = ...).",
+        )
+    tool = getattr(tc, "codesign", None)
+    if tool == None:
+        fail("rules_signing: the resolved codesign.bzl toolchain does not expose a codesign executable")
+    return [DefaultInfo(
+        files = depset([tool]),
+        runfiles = ctx.runfiles(
+            files = [tool],
+            transitive_files = getattr(tc, "data", depset()),
+        ),
+    )]
+
+codesign_bzl_tool = rule(
+    implementation = _codesign_bzl_tool_impl,
+    doc = "Exposes the rcodesign binary selected by codesign.bzl's toolchain resolution.",
+    toolchains = [config_common.toolchain_type(_CODESIGN_BZL_TOOLCHAIN, mandatory = False)],
+)
+
+def _codesign_toolchain_impl(ctx):
+    tool = ctx.file.codesign
+    data = depset(
+        [tool] + ctx.files.data,
+        transitive = [ctx.attr.codesign[DefaultInfo].default_runfiles.files],
+    )
+    return [
+        platform_common.ToolchainInfo(tool = tool, data = data),
+        DefaultInfo(files = data, runfiles = ctx.runfiles(transitive_files = data)),
+    ]
+
+codesign_toolchain = rule(
+    implementation = _codesign_toolchain_impl,
+    doc = """Provides an optional Apple signing toolchain using rcodesign.
+
+By default, codesign.bzl selects the executable for the execution platform.
+Set codesign to a custom rcodesign binary to bypass that resolution entirely.
+Apple's /usr/bin/codesign has a different CLI and is not supported by this adapter.
+""",
+    attrs = {
+        "codesign": attr.label(
+            default = "@rules_signing//signing/toolchains:codesign_bzl",
+            cfg = "exec",
+            allow_single_file = True,
+            doc = "An rcodesign executable, or a target exposing one file and its runfiles.",
+        ),
+        "data": attr.label_list(
+            cfg = "exec",
+            allow_files = True,
+            doc = "Additional runtime files needed by the rcodesign binary.",
+        ),
+    },
+    provides = [platform_common.ToolchainInfo],
+)
+
 def _jarsigner_toolchain_impl(ctx):
     runtime = getattr(ctx.attr.java_runtime[platform_common.ToolchainInfo], "java_runtime", None)
     if runtime == None:

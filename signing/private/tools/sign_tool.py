@@ -911,8 +911,9 @@ def sign_with_codesign(
     """
     if not tool:
         raise ValueError(
-            "sign_tool: codesign tool path is required; register the codesign "
-            "toolchain (@codesign.bzl//toolchain:all)"
+            "sign_tool: codesign tool path is required; register "
+            "\"@rules_signing//signing/toolchains:codesign_toolchain\" "
+            "and its upstream \"@codesign.bzl//toolchain:all\" toolchains"
         )
 
     if not cert_path:

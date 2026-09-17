@@ -14,7 +14,7 @@ load(
     "signing_context",
 )
 
-_CODESIGN_TOOLCHAIN = "@codesign.bzl//toolchain:toolchain_type"
+_CODESIGN_TOOLCHAIN = "//signing/toolchains:codesign_toolchain_type"
 _JARSIGNER_TOOLCHAIN = "//signing/toolchains:jarsigner_toolchain_type"
 
 def _app_bundle_impl(ctx):
@@ -71,13 +71,13 @@ def _codesign_tool_impl(ctx):
     if toolchain == None:
         fail(
             "the codesign toolchain is not registered; add " +
-            "register_toolchains(\"@codesign.bzl//toolchain:all\")",
+            "register_toolchains(\"@rules_signing//signing/toolchains:codesign_toolchain\")",
         )
 
-    tool = toolchain.codesign
+    tool = toolchain.tool
     return [DefaultInfo(
         files = depset([tool]),
-        runfiles = ctx.runfiles(files = [tool]),
+        runfiles = ctx.runfiles(transitive_files = toolchain.data),
     )]
 
 codesign_tool = rule(

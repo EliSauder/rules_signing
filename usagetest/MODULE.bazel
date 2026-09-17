@@ -40,7 +40,8 @@ register_toolchains(
     "@signing_cosign//:cosign_toolchain",
 )
 
-# Apple signing is optional; register it only if you sign Mach-O/bundle outputs.
+# Deliberately register only the upstream type, not rules_signing's adapter.
+# Non-Apple inputs must not resolve it, and Apple inputs must ask for the adapter.
 bazel_dep(name = "codesign.bzl", version = "0.0.13")
 
 register_toolchains("@codesign.bzl//toolchain:all")

@@ -1,7 +1,30 @@
 # Consumers explicitly register implementations; none are registered transitively.
 
 load("@bazel_lib//:bzl_library.bzl", "bzl_library")
-load(":toolchains.bzl", "jarsigner_toolchain")
+load(":toolchains.bzl", "codesign_bzl_tool", "codesign_toolchain", "jarsigner_toolchain")
+
+toolchain_type(
+    name = "codesign_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+codesign_bzl_tool(
+    name = "codesign_bzl",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+codesign_toolchain(
+    name = "codesign",
+    tags = ["manual"],
+)
+
+toolchain(
+    name = "codesign_toolchain",
+    toolchain = ":codesign",
+    toolchain_type = ":codesign_toolchain_type",
+    visibility = ["//visibility:public"],
+)
 
 toolchain_type(
     name = "jarsigner_toolchain_type",

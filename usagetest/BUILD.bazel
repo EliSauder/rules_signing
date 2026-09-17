@@ -1,7 +1,24 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_test")
 load("@rules_signing//signing:defs.bzl", "sign")
-load(":toolchain_test.bzl", "missing_jarsigner_test")
+load(":toolchain_test.bzl", "missing_codesign_test", "missing_jarsigner_test")
+
+genrule(
+    name = "unsigned_dmg",
+    outs = ["unsigned.dmg"],
+    cmd = "echo dmg > $@",
+)
+
+sign(
+    name = "dmg_without_toolchain",
+    src = ":unsigned_dmg",
+    tags = ["manual"],
+)
+
+missing_codesign_test(
+    name = "missing_codesign_test",
+    target_under_test = ":dmg_without_toolchain",
+)
 
 genrule(
     name = "unsigned_jar",

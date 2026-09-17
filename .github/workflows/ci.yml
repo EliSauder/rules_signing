@@ -189,7 +189,7 @@ jobs:
         run: bazel build //... --verbose_failures --sandbox_debug
       - name: Verify signing without a JDK
         run: >-
-          bazel test //:verify_outputs_test //:missing_jarsigner_test
+          bazel test //:verify_outputs_test //:missing_jarsigner_test //:missing_codesign_test
           --java_runtime_version=local_jdk --tool_java_runtime_version=local_jdk
           --repo_env=JAVA_HOME=${{ runner.temp }}/rules-signing-no-jdk
           --test_output=errors

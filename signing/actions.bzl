@@ -56,11 +56,12 @@ artifact to collect everything into a single directory instead.
 toolchain type this module supports. A rule that structurally can only ever
 sign one kind of artifact can call `signing_toolchains()` directly instead,
 passing `False` for whichever toolchains it will never need, and pass that
-to `toolchains=`. All signing types, including jarsigner, are optional and
-require explicit registration by consumers. Declaring jarsigner does not
-resolve a JDK unless its implementation is registered. Optional toolchains
-are not lazy, however: Bazel still analyzes registered implementations even
-when no source needs them, so omitting unused types can avoid those dependencies.
+to `toolchains=`. All signing types, including jarsigner and codesign, are
+optional and require explicit registration by consumers. Their upstream JDK
+and codesign.bzl toolchains are only resolved through registered adapters.
+Optional toolchains are not lazy, however: Bazel still analyzes registered
+implementations even when no source needs them, so omitting unused types can
+avoid those dependencies.
 """
 
 load(

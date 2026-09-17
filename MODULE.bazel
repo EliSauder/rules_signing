@@ -198,9 +198,9 @@ pip_tests.parse(
 )
 use_repo(pip_tests, "signing_tests_pypi")
 
-# The codesign toolchain type comes from codesign.bzl, but registering an
-# implementation is the consumer's choice, so this stays dev-only too.
+# The opt-in adapter reuses codesign.bzl's execution-platform selection.
 register_toolchains(
     "@codesign.bzl//toolchain:all",
+    "//signing/toolchains:codesign_toolchain",
     dev_dependency = True,
 )

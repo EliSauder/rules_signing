@@ -41,8 +41,8 @@
   toolchain ships `rcodesign` prebuilts, so `.app`/`.pkg`/`.dmg` and Mach-O
   binaries are signed from Linux and Windows workers too, with no keychain and
   no dependency on Apple's `/usr/bin/codesign`. `identity` is optional and maps
-  to the signature's binary identifier. Register the toolchain with
-  `register_toolchains("@codesign.bzl//toolchain:all")` (see [Setup](#setup)).
+  to the signature's binary identifier. Register both the upstream toolchains
+  and the opt-in adapter (see [Apple signing toolchain](#apple-signing-toolchain)).
 - For jars, an optional jarsigner toolchain adapts a Bazel/rules_java JDK.
   Register it explicitly when signing jars; other consumers do not need Java.
   Both local and remotely supplied JDKs are supported (see [JDK selection](#jdk-selection)).
@@ -79,7 +79,10 @@ register_toolchains(
 # directory artifact signed with `tool = "auto"` (see below).
 bazel_dep(name = "codesign.bzl", version = "<version>")
 
-register_toolchains("@codesign.bzl//toolchain:all")
+register_toolchains(
+    "@codesign.bzl//toolchain:all",
+    "@rules_signing//signing/toolchains:codesign_toolchain",
+)
 
 # Needed only for jars or directory artifacts signed with tool = "auto".
 # Uses Bazel's local JDK discovery (JAVA_HOME/PATH); requires a full JDK.
@@ -92,6 +95,47 @@ actionable error naming the missing registration. This is not lazy resolution:
 Bazel analyzes any selected registered implementation before `sign` runs.
 A broken registered JDK can therefore still fail analysis for non-JAR inputs;
 leave jarsigner unregistered in consumers that do not need it.
+
+### Apple signing toolchain
+
+Apple signing uses `@rules_signing//signing/toolchains:codesign_toolchain_type`,
+separate from `codesign.bzl`'s upstream type. The default adapter,
+`@rules_signing//signing/toolchains:codesign_toolchain`, delegates executable
+selection to the registered `@codesign.bzl//toolchain:all` toolchains. It uses
+the **execution platform** even when building artifacts for another platform.
+No tool discovery or prebuilt-download logic is duplicated here.
+
+Registering the upstream toolchains alone no longer enables Apple signing:
+existing consumers must also register the adapter shown in [Setup](#setup).
+Without that registration, other signing targets do not resolve the upstream
+codesign toolchain, and Apple inputs report a missing codesign registration.
+The `codesign.bzl` module remains a dependency to provide the default adapter;
+its signer executable is not needed unless that adapter is selected.
+
+To supply your own rcodesign executable instead, define and register a custom
+implementation. This bypasses upstream toolchain resolution:
+
+```starlark
+load("@rules_signing//signing/toolchains:toolchains.bzl", "codesign_toolchain")
+
+codesign_toolchain(
+    name = "my_codesign",
+    codesign = "//tools:rcodesign",
+    # Optional shared libraries or other runtime files:
+    data = ["//tools:rcodesign_runtime_files"],
+)
+
+toolchain(
+    name = "my_codesign_toolchain",
+    toolchain = ":my_codesign",
+    toolchain_type = "@rules_signing//signing/toolchains:codesign_toolchain_type",
+    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+```
+
+The executable's runfiles and `data` are included in signing actions.
+**Apple's `/usr/bin/codesign` is not a drop-in replacement:** this signer uses
+the rcodesign CLI, which is different from Apple's native tool.
 
 ### JDK selection
 
