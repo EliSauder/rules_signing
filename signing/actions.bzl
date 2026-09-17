@@ -51,6 +51,18 @@ layout" case, call `sign_action` and skip building the command line yourself.
 Pair it with `signed_outputs` to emit one output artifact per source (plus
 cosign's `.sig`/`.bundle.json` sidecars), or give it an `out_dir` tree
 artifact to collect everything into a single directory instead.
+
+`SIGNING_TOOLCHAINS` (equivalent to `signing_toolchains()`) declares every
+toolchain type this module supports. A rule that structurally can only ever
+sign one kind of artifact can call `signing_toolchains()` directly instead,
+passing `False` for whichever toolchains it will never need, and pass that
+to `toolchains=`. `jarsigner` deserves special care: unlike the other
+toolchain types, a workspace almost always has *something* registered for
+the Java runtime toolchain type it resolves through, whether or not it uses
+Java, so merely declaring it can make a rule fail to build on a machine
+with no system JDK, even when the toolchain itself is optional and this
+rule never needed it. A rule that will never sign a `.jar` or other JVM
+binary should call `signing_toolchains(jarsigner = False)`.
 """
 
 load(
@@ -64,12 +76,14 @@ load(
     _signing_argv = "signing_argv",
     _signing_attrs = "signing_attrs",
     _signing_context = "signing_context",
+    _signing_toolchains = "signing_toolchains",
 )
 
 SIGNING_ATTRS = _SIGNING_ATTRS
 SIGNING_TOOLCHAINS = _SIGNING_TOOLCHAINS
 TOOL_KINDS = _TOOL_KINDS
 signing_attrs = _signing_attrs
+signing_toolchains = _signing_toolchains
 signing_context = _signing_context
 signing_argv = _signing_argv
 sign_action = _sign_action

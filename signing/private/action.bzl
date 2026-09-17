@@ -1072,10 +1072,72 @@ def signing_attrs(prefix = "signing_"):
 
 SIGNING_ATTRS = signing_attrs()
 
-SIGNING_TOOLCHAINS = [
-    config_common.toolchain_type(OSSLSIGNCODE_TOOLCHAIN, mandatory = False),
-    config_common.toolchain_type(COSIGN_TOOLCHAIN, mandatory = False),
-    config_common.toolchain_type(CODESIGN_TOOLCHAIN, mandatory = False),
-    config_common.toolchain_type(OPENSSL_TOOLCHAIN, mandatory = False),
-    config_common.toolchain_type(JARSIGNER_TOOLCHAIN, mandatory = False),
-]
+def signing_toolchains(
+        osslsigncode = True,
+        cosign = True,
+        codesign = True,
+        openssl = True,
+        jarsigner = True):
+    """Returns the toolchain types a rule needs in order to call `signing_context`.
+
+    All of these are `mandatory = False`: a rule that never resolves a given
+    toolchain (because none of its sources ever select that signer) builds
+    fine without it registered, and `signing_context` reports a clear error,
+    naming the source that needed it, only for a toolchain that *was*
+    actually required and is missing.
+
+    So the arguments below exist to let a rule that structurally can never
+    need a given signer - because it only ever signs one kind of artifact -
+    skip declaring that toolchain type at all, rather than to work around
+    `mandatory = False` not being enough on its own. It usually is enough:
+    most of these toolchain types have no candidate registered unless this
+    project's own extension registered one, so a rule declaring one it never
+    uses costs nothing. `jarsigner` is the exception, and the reason this
+    function takes arguments instead of always returning every type. It
+    resolves through `@bazel_tools//tools/jdk:runtime_toolchain_type`, which
+    almost every Bazel workspace has a matching candidate registered for
+    already, whether or not that workspace uses Java for anything --
+    `rules_java`'s autodetected `local_jdk` registers unconditionally. On a
+    machine with no system JDK, analyzing *that* candidate fails outright,
+    and Bazel does not fall back to a different one just because the first
+    candidate it matched turned out to be broken. Declaring this toolchain
+    type on a rule can therefore make that rule fail to build on such a
+    machine even when `tool` never resolves to `jarsigner` for any of its
+    sources, and even though the toolchain itself is `mandatory = False`.
+
+    Args:
+        osslsigncode: whether to declare `OSSLSIGNCODE_TOOLCHAIN`, needed to
+            sign Windows PE binaries (`.exe`, `.dll`, ...).
+        cosign: whether to declare `COSIGN_TOOLCHAIN`, needed for detached
+            `.sig`/`.bundle.json` signatures and anything with no native
+            signer.
+        codesign: whether to declare `CODESIGN_TOOLCHAIN`, needed to sign
+            Mach-O binaries and `.app`/`.pkg`/`.dmg` bundles.
+        openssl: whether to declare `OPENSSL_TOOLCHAIN`. Only consulted when
+            `cosign` has to convert PKCS#12 certificate material to PEM,
+            which cannot be known until the signing action runs, so `cosign`
+            still requires this whenever it might be used with such
+            material.
+        jarsigner: whether to declare `JARSIGNER_TOOLCHAIN`. Set to `False`
+            for a rule that signs no `.jar`s or other JVM binaries, so it
+            never needs a Java runtime toolchain resolved and cannot be
+            broken by one that fails to analyze. Defaults to `True`, which is
+            what `SIGNING_TOOLCHAINS` uses.
+
+    Returns:
+        A list suitable for a rule's `toolchains`.
+    """
+    toolchains = []
+    if osslsigncode:
+        toolchains.append(config_common.toolchain_type(OSSLSIGNCODE_TOOLCHAIN, mandatory = False))
+    if cosign:
+        toolchains.append(config_common.toolchain_type(COSIGN_TOOLCHAIN, mandatory = False))
+    if codesign:
+        toolchains.append(config_common.toolchain_type(CODESIGN_TOOLCHAIN, mandatory = False))
+    if openssl:
+        toolchains.append(config_common.toolchain_type(OPENSSL_TOOLCHAIN, mandatory = False))
+    if jarsigner:
+        toolchains.append(config_common.toolchain_type(JARSIGNER_TOOLCHAIN, mandatory = False))
+    return toolchains
+
+SIGNING_TOOLCHAINS = signing_toolchains()
