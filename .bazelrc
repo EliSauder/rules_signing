@@ -38,6 +38,8 @@ build:windows --workspace_status_command=tools/workspace_status.bat
 # does not affect anything consuming this module, since .bazelrc is never
 # inherited by a dependent's own build.
 build --java_runtime_version=remotejdk_17
+# jarsigner runs during the build, so its JDK is selected in the exec configuration.
+build --tool_java_runtime_version=remotejdk_17
 
 # rules_scala's protobuf dep otherwise builds protoc from source through the
 # legacy native proto rule path, which does not consult the prebuilt protoc

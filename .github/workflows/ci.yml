@@ -140,6 +140,8 @@ jobs:
         run: bazel build //... --verbose_failures --sandbox_debug
       - name: Test
         run: bazel test //... --verbose_failures --sandbox_debug --test_output=errors --test_summary=detailed  --flaky_test_attempts=5
+      - name: Verify signing with the local JDK
+        run: bazel test //signing/tests:sign_verify_test --extra_toolchains=//signing/toolchains:local_jarsigner_toolchain --test_output=errors
   test-with-cache:
     needs: build-and-test
     strategy:
@@ -185,3 +187,9 @@ jobs:
           cache-save: ${{ github.event_name != 'pull_request' }}
       - name: Build
         run: bazel build //... --verbose_failures --sandbox_debug
+      - name: Verify signing without a JDK
+        run: >-
+          bazel test //:verify_outputs_test //:missing_jarsigner_test
+          --java_runtime_version=local_jdk --tool_java_runtime_version=local_jdk
+          --repo_env=JAVA_HOME=${{ runner.temp }}/rules-signing-no-jdk
+          --test_output=errors

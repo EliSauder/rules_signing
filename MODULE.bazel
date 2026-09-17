@@ -63,6 +63,7 @@ use_repo(java_toolchains, "remotejdk17_linux", "remotejdk17_macos", "remotejdk17
 
 register_toolchains(
     "@rules_java//toolchains:all",
+    "//signing/toolchains:jarsigner_toolchain",
     dev_dependency = True,
 )
 

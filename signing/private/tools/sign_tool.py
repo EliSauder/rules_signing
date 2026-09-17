@@ -1043,9 +1043,9 @@ def sign_with_jarsigner(
 
     if not tool:
         raise ValueError(
-            "sign_tool: jarsigner tool path is required; register a JDK "
-            "toolchain that ships one, for example rules_java's "
-            "\"@rules_java//toolchains:all\""
+            "sign_tool: jarsigner tool path is required; register "
+            "\"@rules_signing//signing/toolchains:jarsigner_toolchain\" "
+            "or \"@rules_signing//signing/toolchains:local_jarsigner_toolchain\""
         )
 
     if not cert_path:
