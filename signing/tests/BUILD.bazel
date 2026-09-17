@@ -5,9 +5,11 @@ load(
     "//signing/tests:fixtures.bzl",
     "app_bundle",
     "codesign_tool",
+    "dmg_fixture",
     "embedded_sign",
     "jdk_tool",
     "pick_file",
+    "pkg_fixture",
 )
 load("//signing/tests:manifest.bzl", "file_name_manifest")
 load("//signing/tests:jarsigner_toolchain_test.bzl", "jarsigner_toolchain_test_suite")
@@ -455,6 +457,48 @@ sign(
     tool = "codesign",
 )
 
+# Real UDIF/xar containers, buildable only where `hdiutil`/`pkgbuild` exist.
+# See dmg_fixture/pkg_fixture in fixtures.bzl for why no Bazel rule builds
+# these instead. `target_compatible_with` makes both the fixture and every
+# target signing it (transitively, `signed_real_dmg`/`signed_real_pkg`)
+# incompatible everywhere but macOS, which is what keeps `bazel build //...`
+# and `bazel test //...` working unchanged on Linux and Windows.
+dmg_fixture(
+    name = "unsigned_dmg_fixture",
+    src = ":hello_macho",
+    payload_name = "hello",
+    target_compatible_with = select({
+        "@platforms//os:macos": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    volume_name = "rules_signing test",
+)
+
+pkg_fixture(
+    name = "unsigned_pkg_fixture",
+    src = ":hello_macho",
+    identifier = "dev.rules-signing.hello.pkg",
+    payload_name = "hello",
+    target_compatible_with = select({
+        "@platforms//os:macos": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+sign(
+    name = "signed_real_dmg",
+    src = ":unsigned_dmg_fixture",
+    certificate = ":dev_cert_apple_pem",
+    tool = "codesign",
+)
+
+sign(
+    name = "signed_real_pkg",
+    src = ":unsigned_pkg_fixture",
+    certificate = ":dev_cert_apple_pem",
+    tool = "codesign",
+)
+
 sign(
     name = "signed_real_blobs",
     src = ":unsigned_text_files",
@@ -807,6 +851,15 @@ py_test(
         # excluded on Windows; see unsigned_oci_image for why.
         "@platforms//os:windows": [],
         "//conditions:default": ["--signed-oci=$(rootpath :signed_real_oci_image)"],
+    }) + select({
+        # unsigned_dmg_fixture/unsigned_pkg_fixture (and signed_real_dmg/
+        # signed_real_pkg, which depend on them) are target_compatible_with
+        # excluded everywhere but macOS; see fixtures.bzl for why.
+        "@platforms//os:macos": [
+            "--dmg=$(rootpath :signed_real_dmg)",
+            "--pkg=$(rootpath :signed_real_pkg)",
+        ],
+        "//conditions:default": [],
     }),
     data = [
         ":codesign_tool",
@@ -848,6 +901,12 @@ py_test(
     ] + select({
         "@platforms//os:windows": [],
         "//conditions:default": [":signed_real_oci_image"],
+    }) + select({
+        "@platforms//os:macos": [
+            ":signed_real_dmg",
+            ":signed_real_pkg",
+        ],
+        "//conditions:default": [],
     }),
     deps = [
         "//signing/private/tools:sign_tool_lib",

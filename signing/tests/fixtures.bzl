@@ -199,6 +199,103 @@ embedded_sign = rule(
     toolchains = SIGNING_TOOLCHAINS,
 )
 
+# ---------------------------------------------------------------------------
+# Real .dmg / .pkg fixtures
+#
+# Building a genuine UDIF disk image or xar installer package requires Apple's
+# own `hdiutil`/`pkgbuild`, which only run on a macOS host -- rules_apple and
+# apple_support ship no packaging rule for either format at all (they only
+# assemble .app bundles), and no hermetic, cross-platform substitute exists in
+# the Bazel ecosystem. These rules shell out to the real tools directly, so
+# they only build where those tools exist; the BUILD file restricts them to
+# macOS with `target_compatible_with`, and CI already runs a macos-latest leg
+# that builds and signs them for real, closing the gap that used to leave
+# `.dmg`/`.pkg` signing verified only by a passthrough/layout test.
+# ---------------------------------------------------------------------------
+
+def _dmg_fixture_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".dmg")
+    payload = ctx.file.src
+
+    ctx.actions.run_shell(
+        inputs = [payload],
+        outputs = [out],
+        command = """
+set -eu
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+cp "$1" "$staging/$3"
+/usr/bin/hdiutil create -volname "$4" -srcfolder "$staging" -ov -format UDZO "$2"
+""",
+        arguments = [payload.path, out.path, ctx.attr.payload_name, ctx.attr.volume_name],
+        mnemonic = "MakeDmgFixture",
+        progress_message = "Building a real .dmg fixture with hdiutil for {}".format(ctx.label),
+        execution_requirements = {"no-sandbox": "1"},
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+dmg_fixture = rule(
+    implementation = _dmg_fixture_impl,
+    doc = """Builds a genuine UDIF disk image with `hdiutil`, macOS-only.
+
+There is no Bazel rule -- in rules_apple, apple_support, or elsewhere -- that
+produces a `.dmg`; this shells out to the real tool instead of trying to
+reimplement UDIF. `hdiutil` needs unrestricted filesystem access to attach and
+detach the image it builds, which the sandbox denies, hence `no-sandbox`.
+""",
+    attrs = {
+        "src": attr.label(
+            allow_single_file = True,
+            mandatory = True,
+            doc = "File placed inside the disk image under `payload_name`.",
+        ),
+        "payload_name": attr.string(mandatory = True),
+        "volume_name": attr.string(mandatory = True),
+    },
+)
+
+def _pkg_fixture_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".pkg")
+    payload = ctx.file.src
+
+    ctx.actions.run_shell(
+        inputs = [payload],
+        outputs = [out],
+        command = """
+set -eu
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+mkdir -p "$staging/usr/local/bin"
+cp "$1" "$staging/usr/local/bin/$3"
+chmod +x "$staging/usr/local/bin/$3"
+/usr/bin/pkgbuild --root "$staging" --identifier "$4" --version "1.0" "$2"
+""",
+        arguments = [payload.path, out.path, ctx.attr.payload_name, ctx.attr.identifier],
+        mnemonic = "MakePkgFixture",
+        progress_message = "Building a real .pkg fixture with pkgbuild for {}".format(ctx.label),
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+pkg_fixture = rule(
+    implementation = _pkg_fixture_impl,
+    doc = """Builds a genuine xar installer package with `pkgbuild`, macOS-only.
+
+Same rationale as `dmg_fixture`: no Bazel rule builds `.pkg` files, so
+`pkgbuild` is invoked directly. `pkgbuild` emits a component package, which is
+the same flat xar container `productbuild` would wrap into a product archive
+-- both are the shape `rcodesign` signs.
+""",
+    attrs = {
+        "src": attr.label(
+            allow_single_file = True,
+            mandatory = True,
+            doc = "File installed at usr/local/bin/<payload_name>.",
+        ),
+        "payload_name": attr.string(mandatory = True),
+        "identifier": attr.string(mandatory = True),
+    },
+)
+
 def _pick_file_impl(ctx):
     matches = [
         f
