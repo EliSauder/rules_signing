@@ -56,13 +56,12 @@ artifact to collect everything into a single directory instead.
 toolchain type this module supports. A rule that structurally can only ever
 sign one kind of artifact can call `signing_toolchains()` directly instead,
 passing `False` for whichever toolchains it will never need, and pass that
-to `toolchains=`. `jarsigner` deserves special care: unlike the other
-toolchain types, a workspace almost always has *something* registered for
-the Java runtime toolchain type it resolves through, whether or not it uses
-Java, so merely declaring it can make a rule fail to build on a machine
-with no system JDK, even when the toolchain itself is optional and this
-rule never needed it. A rule that will never sign a `.jar` or other JVM
-binary should call `signing_toolchains(jarsigner = False)`.
+to `toolchains=`. All signing types, including jarsigner and codesign, are
+optional and require explicit registration by consumers. Their upstream JDK
+and codesign.bzl toolchains are only resolved through registered adapters.
+Optional toolchains are not lazy, however: Bazel still analyzes registered
+implementations even when no source needs them, so omitting unused types can
+avoid those dependencies.
 """
 
 load(

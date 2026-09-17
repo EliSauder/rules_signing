@@ -63,6 +63,7 @@ use_repo(java_toolchains, "remotejdk17_linux", "remotejdk17_macos", "remotejdk17
 
 register_toolchains(
     "@rules_java//toolchains:all",
+    "//signing/toolchains:jarsigner_toolchain",
     dev_dependency = True,
 )
 
@@ -197,9 +198,9 @@ pip_tests.parse(
 )
 use_repo(pip_tests, "signing_tests_pypi")
 
-# The codesign toolchain type comes from codesign.bzl, but registering an
-# implementation is the consumer's choice, so this stays dev-only too.
+# The opt-in adapter reuses codesign.bzl's execution-platform selection.
 register_toolchains(
     "@codesign.bzl//toolchain:all",
+    "//signing/toolchains:codesign_toolchain",
     dev_dependency = True,
 )

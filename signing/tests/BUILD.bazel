@@ -10,6 +10,8 @@ load(
     "pick_file",
 )
 load("//signing/tests:manifest.bzl", "file_name_manifest")
+load("//signing/tests:jarsigner_toolchain_test.bzl", "jarsigner_toolchain_test_suite")
+load("//signing/tests:codesign_toolchain_test.bzl", "codesign_toolchain_test_suite")
 load(
     "//signing/tests/testdata_certs:certs.bzl",
     "DEV_CERT_PASSWORD",
@@ -27,6 +29,9 @@ load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_test")
 
 package(default_visibility = ["//visibility:public"])
+
+jarsigner_toolchain_test_suite(name = "jarsigner_toolchain_tests")
+codesign_toolchain_test_suite(name = "codesign_toolchain_tests")
 
 filegroup(
     name = "unsigned_files",

@@ -1,8 +1,61 @@
-# Only toolchain types are declared here. Concrete toolchains are created by
-# the tool repositories (see repositories.bzl) so that this module never
-# depends on them: downstream consumers declare and register their own.
+# Consumers explicitly register implementations; none are registered transitively.
 
 load("@bazel_lib//:bzl_library.bzl", "bzl_library")
+load(":toolchains.bzl", "codesign_bzl_tool", "codesign_toolchain", "jarsigner_toolchain")
+
+toolchain_type(
+    name = "codesign_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+codesign_bzl_tool(
+    name = "codesign_bzl",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+codesign_toolchain(
+    name = "codesign",
+    tags = ["manual"],
+)
+
+toolchain(
+    name = "codesign_toolchain",
+    toolchain = ":codesign",
+    toolchain_type = ":codesign_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+toolchain_type(
+    name = "jarsigner_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+# Keep unregistered JDK adapters out of wildcard builds on machines without Java.
+jarsigner_toolchain(
+    name = "jarsigner",
+    tags = ["manual"],
+)
+
+toolchain(
+    name = "jarsigner_toolchain",
+    toolchain = ":jarsigner",
+    toolchain_type = ":jarsigner_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+jarsigner_toolchain(
+    name = "local_jarsigner",
+    java_runtime = "@bazel_tools//tools/jdk:jdk",
+    tags = ["manual"],
+)
+
+toolchain(
+    name = "local_jarsigner_toolchain",
+    toolchain = ":local_jarsigner",
+    toolchain_type = ":jarsigner_toolchain_type",
+    visibility = ["//visibility:public"],
+)
 
 toolchain_type(
     name = "cosign_toolchain_type",
@@ -17,8 +70,7 @@ toolchain_type(
 exports_files(["toolchains.bzl"])
 
 # Optional: only needed to convert PKCS#12 signing material into the PEM form
-# cosign requires. `sign` resolves it lazily and only fails if a build actually
-# needs the conversion.
+# cosign requires. A missing registration only fails if the conversion is needed.
 toolchain_type(
     name = "openssl_toolchain_type",
     visibility = ["//visibility:public"],

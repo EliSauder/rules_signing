@@ -1,0 +1,79 @@
+load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_signing//signing:defs.bzl", "certificate", "sign")
+load("@rules_signing//signing/tests/testdata_certs:certs.bzl", "DEV_CERT_PASSWORD")
+
+certificate(
+    name = "authenticode_certificate",
+    certificate_file = "@rules_signing//signing/tests/testdata_certs:generic.pem",
+)
+
+certificate(
+    name = "cosign_certificate",
+    certificate_file = "@rules_signing//signing/tests/testdata_certs:cosign.key",
+    password = DEV_CERT_PASSWORD,
+)
+
+filegroup(
+    name = "script",
+    srcs = ["hello.ps1"],
+)
+
+filegroup(
+    name = "blob",
+    srcs = ["message.txt"],
+)
+
+# A PowerShell script exercises real Authenticode signing without introducing
+# compiler toolchains just to produce a PE fixture.
+[
+    sign(
+        name = "signed_script_" + tool,
+        src = ":script",
+        tool = tool,
+        certificate = ":authenticode_certificate",
+    )
+    for tool in ["auto", "osslsigncode"]
+]
+
+[
+    sign(
+        name = "signed_blob_" + tool,
+        src = ":blob",
+        tool = tool,
+        certificate = ":cosign_certificate",
+    )
+    for tool in ["auto", "cosign"]
+]
+
+py_test(
+    name = "verify_signatures_test",
+    size = "small",
+    srcs = ["verify_signatures_test.py"],
+    args = [
+        "--osslsigncode=$(rlocationpath @signing_osslsigncode//:osslsigncode_file)",
+        "--cosign=$(rlocationpath @signing_cosign//:cosign_file)",
+        "--ca=$(rlocationpath @rules_signing//signing/tests/testdata_certs:generic.crt)",
+        "--public-key=$(rlocationpath @rules_signing//signing/tests/testdata_certs:cosign.pub)",
+        "--unsigned-script=$(rlocationpath :hello.ps1)",
+        "--unsigned-blob=$(rlocationpath :message.txt)",
+        "--script=$(rlocationpath :signed_script_auto)",
+        "--script=$(rlocationpath :signed_script_osslsigncode)",
+        "--blob-outputs",
+        "$(rlocationpaths :signed_blob_auto)",
+        "--blob-outputs",
+        "$(rlocationpaths :signed_blob_cosign)",
+    ],
+    data = [
+        ":hello.ps1",
+        ":message.txt",
+        ":signed_blob_auto",
+        ":signed_blob_cosign",
+        ":signed_script_auto",
+        ":signed_script_osslsigncode",
+        "@rules_signing//signing/tests/testdata_certs:cosign.pub",
+        "@rules_signing//signing/tests/testdata_certs:generic.crt",
+        "@signing_cosign//:cosign_file",
+        "@signing_osslsigncode//:osslsigncode_file",
+    ],
+    deps = ["@rules_python//python/runfiles"],
+)

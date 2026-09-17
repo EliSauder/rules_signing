@@ -41,12 +41,12 @@
   toolchain ships `rcodesign` prebuilts, so `.app`/`.pkg`/`.dmg` and Mach-O
   binaries are signed from Linux and Windows workers too, with no keychain and
   no dependency on Apple's `/usr/bin/codesign`. `identity` is optional and maps
-  to the signature's binary identifier. Register the toolchain with
-  `register_toolchains("@codesign.bzl//toolchain:all")` (see [Setup](#setup)).
-- For jars, `jarsigner` is resolved through rules_java's own JDK runtime
-  toolchain rather than a toolchain this project defines, so there is
-  normally nothing to register — Bazel registers a default JDK toolchain out
-  of the box, and jarsigner ships inside it. The signing material is
+  to the signature's binary identifier. Register both the upstream toolchains
+  and the opt-in adapter (see [Apple signing toolchain](#apple-signing-toolchain)).
+- For jars, an optional jarsigner toolchain adapts a Bazel/rules_java JDK.
+  Register it explicitly when signing jars; other consumers do not need Java.
+  Both local and remotely supplied JDKs are supported (see [JDK selection](#jdk-selection)).
+  The signing material is
   repackaged into a throwaway PKCS#12 keystore during the build (see
   [Signing with a single certificate](#signing-with-a-single-certificate)),
   so a PEM certificate works here too even though jarsigner itself only reads
@@ -79,12 +79,118 @@ register_toolchains(
 # directory artifact signed with `tool = "auto"` (see below).
 bazel_dep(name = "codesign.bzl", version = "<version>")
 
-register_toolchains("@codesign.bzl//toolchain:all")
+register_toolchains(
+    "@codesign.bzl//toolchain:all",
+    "@rules_signing//signing/toolchains:codesign_toolchain",
+)
+
+# Needed only for jars or directory artifacts signed with tool = "auto".
+# Uses Bazel's local JDK discovery (JAVA_HOME/PATH); requires a full JDK.
+register_toolchains("@rules_signing//signing/toolchains:local_jarsigner_toolchain")
 ```
 
-Only register the toolchains you actually need. `sign` resolves toolchains
-lazily and fails with an actionable message naming the missing registration if
-an input requires a signer you have not registered.
+Only register the toolchains you actually need. An unregistered toolchain is
+allowed until an input requires its signer, at which point `sign` reports an
+actionable error naming the missing registration. This is not lazy resolution:
+Bazel analyzes any selected registered implementation before `sign` runs.
+A broken registered JDK can therefore still fail analysis for non-JAR inputs;
+leave jarsigner unregistered in consumers that do not need it.
+
+The standalone [minimal consumer test](usagetest_minimal/MODULE.bazel) registers
+only osslsigncode and cosign, with no Java, jarsigner, codesign.bzl, codesign, or
+openssl registrations. It signs and verifies PowerShell scripts and text blobs
+with both automatic and explicit signer selection, using the checked-in
+development certificates. CI runs it on Linux, macOS, and Windows with Bazel 8
+and 9 and an unusable `JAVA_HOME`, and checks that its configured dependency
+graph contains no Java, upstream codesign, or openssl tools.
+
+### Apple signing toolchain
+
+Apple signing uses `@rules_signing//signing/toolchains:codesign_toolchain_type`,
+separate from `codesign.bzl`'s upstream type. The default adapter,
+`@rules_signing//signing/toolchains:codesign_toolchain`, delegates executable
+selection to the registered `@codesign.bzl//toolchain:all` toolchains. It uses
+the **execution platform** even when building artifacts for another platform.
+No tool discovery or prebuilt-download logic is duplicated here.
+
+Registering the upstream toolchains alone no longer enables Apple signing:
+existing consumers must also register the adapter shown in [Setup](#setup).
+Without that registration, other signing targets do not resolve the upstream
+codesign toolchain, and Apple inputs report a missing codesign registration.
+The `codesign.bzl` module remains a dependency to provide the default adapter;
+its signer executable is not needed unless that adapter is selected.
+
+To supply your own rcodesign executable instead, define and register a custom
+implementation. This bypasses upstream toolchain resolution:
+
+```starlark
+load("@rules_signing//signing/toolchains:toolchains.bzl", "codesign_toolchain")
+
+codesign_toolchain(
+    name = "my_codesign",
+    codesign = "//tools:rcodesign",
+    # Optional shared libraries or other runtime files:
+    data = ["//tools:rcodesign_runtime_files"],
+)
+
+toolchain(
+    name = "my_codesign_toolchain",
+    toolchain = ":my_codesign",
+    toolchain_type = "@rules_signing//signing/toolchains:codesign_toolchain_type",
+    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+```
+
+The executable's runfiles and `data` are included in signing actions.
+**Apple's `/usr/bin/codesign` is not a drop-in replacement:** this signer uses
+the rcodesign CLI, which is different from Apple's native tool.
+
+### JDK selection
+
+There are two ready-made implementations; register **one**:
+
+| Registration under `@rules_signing//signing/toolchains:` | JDK source |
+| --- | --- |
+| `local_jarsigner_toolchain` | Bazel's `@bazel_tools//tools/jdk:jdk`, using its standard local JDK discovery. |
+| `jarsigner_toolchain` | Bazel's `@bazel_tools//tools/jdk:current_java_runtime` in the execution configuration, using the registered Java runtime toolchains. |
+
+For a downloaded JDK, use the second implementation:
+
+```starlark
+register_toolchains("@rules_signing//signing/toolchains:jarsigner_toolchain")
+```
+
+Select its runtime with `--tool_java_runtime_version=remotejdk_17` (or another
+version supported by your `rules_java`). `--tool_java_runtime_version=local_jdk`
+selects the local JDK through the same adapter. The `--java_runtime_version`
+flag alone does not select the signing JDK: jarsigner runs on the **execution**
+platform, not the platform of the artifact being signed.
+
+To use a particular downloaded or custom `java_runtime` target, define an
+adapter in your BUILD file and register its `toolchain` target:
+
+```starlark
+load("@rules_signing//signing/toolchains:toolchains.bzl", "jarsigner_toolchain")
+
+jarsigner_toolchain(
+    name = "my_jarsigner",
+    java_runtime = "@my_jdk//:jdk",
+)
+
+toolchain(
+    name = "my_jarsigner_toolchain",
+    toolchain = ":my_jarsigner",
+    toolchain_type = "@rules_signing//signing/toolchains:jarsigner_toolchain_type",
+    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+```
+
+The runtime must expose the standard `ToolchainInfo.java_runtime` provider and
+contain `jarsigner` or `jarsigner.exe`. The adapter carries the whole JDK into
+the signing action, including shared libraries and `keytool`. It reuses Bazel
+and `rules_java` resolution rather than probing the host or downloading Java
+itself. Existing consumers that relied on implicit Java runtime registration
+must now explicitly register a jarsigner implementation.
 
 **Directory artifacts require every signer to be registered.** Which signer an
 individual file needs is decided while the build graph is built, and the
@@ -93,17 +199,15 @@ any other tree artifact) do not exist yet at that point. `tool = "auto"`
 therefore has to assume a tree may hold anything — nested `.exe`/`.dll` files
 needing `osslsigncode`, Mach-O binaries and `.app`/`.dmg`/`.pkg` bundles
 needing `codesign`, or `.jar` files needing `jarsigner` — and requires **all**
-signing toolchains, including `codesign.bzl`, even when nothing in the tree
-turns out to need them. jarsigner's toolchain is the one usually already
-registered by default (see [Setup](#setup)), so this rarely means anything
-extra to register in practice.
+signing toolchains, including `codesign.bzl` and jarsigner, even when nothing
+in the tree turns out to need them.
 
 Individual files do not have this problem. A file's signer is known exactly, so
-only the toolchains actually selected are requested: signing a single
+only the toolchains actually selected are required: signing a single
 `cc_binary` built for Linux asks for cosign and nothing else.
 
 If you do not want to register signers you will never use, name the one you
-need explicitly and no other toolchain is requested:
+need explicitly and no other native signer is required:
 
 ```starlark
 sign(

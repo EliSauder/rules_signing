@@ -1,0 +1,1 @@
+This blob is signed using only the cosign toolchain.
