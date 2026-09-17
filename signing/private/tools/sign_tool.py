@@ -402,12 +402,7 @@ def pkcs12_to_pem(
     if not include_certs:
         # Only the private key is extracted; see the `include_certs` doc.
         cmd.append("-nocerts")
-    try:
-        run_cmd(cmd, env=env)
-    except subprocess.CalledProcessError:
-        # Certificates written by older tools use ciphers that OpenSSL 3 only
-        # exposes through its legacy provider.
-        run_cmd(cmd + ["-legacy"], env=env)
+    run_cmd(cmd, env=env)
     return str(out)
 
 
@@ -874,6 +869,14 @@ def sign_with_osslsigncode(
         cmd = [tool, "sign", "-pkcs12", cert_path, "-h", "sha256"]
         if password:
             cmd.extend(["-pass", password])
+    # The osslsigncode binary fetched by the toolchain is statically linked
+    # with dynamic loading disabled, so OpenSSL's legacy provider can never be
+    # loaded; without this flag every invocation prints a pair of harmless but
+    # confusing "Legacy mode disabled" warnings. This does narrow what the
+    # tool accepts: a PKCS#12 file encrypted with a legacy cipher (for
+    # example PBE-SHA1-RC2-40 or 3DES) will be rejected instead of silently
+    # failing to load the provider. See the README for details.
+    cmd.append("-nolegacy")
     if ca_path:
         # Embeds the issuing chain in the signature so a verifier can build a
         # path to the root without having to source the intermediates itself.
@@ -952,7 +955,21 @@ def sign_with_codesign(
     for flag in [o.strip() for o in options.split(",") if o.strip()]:
         cmd.extend(["--code-signature-flags", flag])
 
-    cmd.extend([infile, outfile])
+    sign_infile = infile
+    if infile != outfile and infile.lower().endswith(".dmg"):
+        # rcodesign signs a DMG in place (it needs a plain File handle), so
+        # when infile and outfile differ it copies infile to outfile itself
+        # first -- inheriting infile's permission bits via std::fs::copy.
+        # Bazel materializes action inputs read-only, so that copy is
+        # unwritable and the in-place signature rcodesign then tries to write
+        # fails with EACCES. Making the writable copy here instead, before
+        # rcodesign ever opens the file, and pointing it at its own copy as
+        # both input and output avoids rcodesign's copy path entirely.
+        shutil.copy2(infile, outfile)
+        os.chmod(outfile, os.stat(outfile).st_mode | stat.S_IWUSR)
+        sign_infile = outfile
+
+    cmd.extend([sign_infile, outfile])
     run_cmd(cmd)
 
 

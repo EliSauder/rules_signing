@@ -158,6 +158,30 @@ class SignatureVerificationTest(unittest.TestCase):
             info,
         )
 
+    def test_dmg_signature_is_valid(self):
+        if _ARGS.dmg is None:
+            self.skipTest("real .dmg fixture only builds on macOS")
+
+        signed = _rlocation(_ARGS.dmg)
+        self.assertTrue(os.path.isfile(signed), signed)
+
+        # `verify` only works on Mach-O binaries; a DMG's embedded signature
+        # is read back the same way `print-signature-info` reads a Mach-O's.
+        info = self.signature_info(signed)
+        self.assertIn("signature_verifies: true", info)
+
+    def test_pkg_signature_is_valid(self):
+        if _ARGS.pkg is None:
+            self.skipTest("real .pkg fixture only builds on macOS")
+
+        signed = _rlocation(_ARGS.pkg)
+        self.assertTrue(os.path.isfile(signed), signed)
+
+        # A `.pkg` is a xar archive; rcodesign reports its signature under a
+        # different key than the CMS-based Mach-O/DMG one.
+        info = self.signature_info(signed)
+        self.assertIn("cms_signature_verifies: true", info)
+
     def signature_info(self, path):
         result = _run([_ARGS.codesign, "print-signature-info", path])
         self.assertSucceeded(result, "rcodesign print-signature-info")
@@ -408,6 +432,10 @@ def parse_args(argv):
     # Omitted on Windows, where oci_image is excluded from the build because
     # of rules_oci's known Windows gaps (bazel-contrib/rules_oci#827).
     parser.add_argument("--signed-oci", default=None)
+    # Omitted everywhere but macOS, where the real .dmg/.pkg fixtures in
+    # signing/tests/BUILD.bazel are buildable; see fixtures.bzl.
+    parser.add_argument("--dmg", default=None)
+    parser.add_argument("--pkg", default=None)
     parser.add_argument("--shared-root", required=True)
     parser.add_argument("--shared-public-key", required=True)
     parser.add_argument("--shared-pe", action="append", default=[])

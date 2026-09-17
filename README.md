@@ -558,6 +558,15 @@ another module. Without the toolchain, a PKCS#12 certificate routed to
 `cosign` or `jarsigner` fails with an actionable message rather than a cryptic
 error from either.
 
+`osslsigncode` always passes `-nolegacy`, since the binary the toolchain
+fetches is statically linked with dynamic loading disabled and can never load
+OpenSSL 3's legacy provider anyway — the flag only silences the resulting
+"Legacy mode disabled" warning. The one consequence is that a PKCS#12
+certificate encrypted with a legacy cipher (for example `PBE-SHA1-RC2-40` or
+3DES) is rejected outright rather than failing later with a more confusing
+error; re-export the certificate with a modern cipher (`-certpbe AES-256-CBC
+-keypbe AES-256-CBC`, the openssl default since 3.0) if this happens.
+
 Production Apple distribution still requires a real Apple-issued Developer ID
 certificate, which no other signer will accept — the single-certificate path is
 for development and internal signing.

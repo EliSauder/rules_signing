@@ -4,7 +4,6 @@ import os
 import pathlib
 import shutil
 import stat
-import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -739,7 +738,12 @@ class SignToolUnitTest(unittest.TestCase):
                 self.assertEqual(cmd[1], "sign")
                 self.assertEqual(cmd[cmd.index("--p12-file") + 1], str(cert))
                 self.assertEqual(cmd[cmd.index("--p12-password") + 1], "secret")
-                self.assertEqual(cmd[-2:], [str(in_dmg), str(out_dmg)])
+                # rcodesign signs a DMG in place, and copies infile to outfile
+                # itself when they differ, inheriting infile's permission
+                # bits -- fatal against Bazel's read-only inputs. sign_tool
+                # makes its own writable copy first and hands rcodesign that
+                # same path as both input and output to avoid the copy.
+                self.assertEqual(cmd[-2:], [str(out_dmg), str(out_dmg)])
                 # rcodesign needs no keychain, so `security` must never be run.
                 self.assertNotIn("security", [pathlib.Path(c[0]).name for c in recorded])
 
@@ -1446,38 +1450,6 @@ class SignToolUnitTest(unittest.TestCase):
                 convert[convert.index("-out") + 1],
             )
             self.assertTrue(sign_tool.is_cosign_private_key(resolved))
-
-    def test_cosign_retries_pkcs12_conversion_with_the_legacy_provider(self) -> None:
-        # PKCS#12 files written by older tools use ciphers OpenSSL 3 exposes
-        # only through its legacy provider.
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            cert = self._cert(root, "cert.p12", False)
-
-            recorded: list[list[str]] = []
-
-            def fake(cmd: list[str], **_kw: object) -> None:
-                recorded.append(cmd)
-                if pathlib.Path(cmd[0]).name != "fake-openssl":
-                    _fake_cosign(cmd)
-                    return
-                if "-legacy" not in cmd:
-                    raise subprocess.CalledProcessError(1, cmd)
-                pathlib.Path(cmd[cmd.index("-out") + 1]).write_text(
-                    _PEM_CERTIFICATE, encoding="utf-8"
-                )
-
-            with mock.patch.object(sign_tool, "run_cmd", side_effect=fake):
-                sign_tool.resolve_cosign_key(
-                    tool="fake-cosign",
-                    cert_path=str(cert),
-                    password="pw",
-                    tmpdir=tmp,
-                    openssl="fake-openssl",
-                )
-
-            self.assertNotIn("-legacy", recorded[0])
-            self.assertIn("-legacy", recorded[1])
 
     def test_cosign_pkcs12_without_openssl_explains_how_to_proceed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
