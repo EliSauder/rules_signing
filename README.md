@@ -96,6 +96,14 @@ Bazel analyzes any selected registered implementation before `sign` runs.
 A broken registered JDK can therefore still fail analysis for non-JAR inputs;
 leave jarsigner unregistered in consumers that do not need it.
 
+The standalone [minimal consumer test](usagetest_minimal/MODULE.bazel) registers
+only osslsigncode and cosign, with no Java, jarsigner, codesign.bzl, codesign, or
+openssl registrations. It signs and verifies PowerShell scripts and text blobs
+with both automatic and explicit signer selection, using the checked-in
+development certificates. CI runs it on Linux, macOS, and Windows with Bazel 8
+and 9 and an unusable `JAVA_HOME`, and checks that its configured dependency
+graph contains no Java, upstream codesign, or openssl tools.
+
 ### Apple signing toolchain
 
 Apple signing uses `@rules_signing//signing/toolchains:codesign_toolchain_type`,

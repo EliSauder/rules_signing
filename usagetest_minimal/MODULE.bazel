@@ -1,0 +1,29 @@
+module(
+    name = "rules_signing_minimal_consumer_test",
+    version = "1.0.0",
+)
+
+bazel_dep(name = "rules_signing", version = "0.0.1")
+local_path_override(
+    module_name = "rules_signing",
+    path = "..",
+)
+
+# No Java, jarsigner, codesign.bzl, codesign, or openssl toolchains are registered.
+signing_tools = use_extension("@rules_signing//signing:extensions.bzl", "signing_tools")
+use_repo(signing_tools, "signing_cosign", "signing_osslsigncode")
+register_toolchains(
+    "@signing_osslsigncode//:osslsigncode_toolchain",
+    "@signing_cosign//:cosign_toolchain",
+)
+
+bazel_dep(name = "rules_python", version = "2.3.3", dev_dependency = True)
+rules_python_config = use_extension(
+    "@rules_python//python/extensions:config.bzl",
+    "config",
+    dev_dependency = True,
+)
+rules_python_config.explicit_init_py(default = True)
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python", dev_dependency = True)
+python.toolchain(python_version = "3.11")
