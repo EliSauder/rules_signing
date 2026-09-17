@@ -1,5 +1,5 @@
 matrix: &matrix
-  bazel: ["8.*", "9.*"]
+  bazel: ["8.x", "9.x"]
   platform: ["debian11", "ubuntu2204", "windows", "macos", "macos_arm64"]
 
 # Builds an anonymous module whose MODULE.bazel does nothing but `bazel_dep`
