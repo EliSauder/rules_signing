@@ -854,6 +854,12 @@ def sign_with_osslsigncode(
     password: str,
     ca_path: str = "",
 ) -> None:
+    if not tool:
+        raise ValueError(
+            "sign_tool: osslsigncode tool path is required; register the "
+            "osslsigncode toolchain "
+            '("@signing_osslsigncode//:osslsigncode_toolchain")'
+        )
     if not cert_path:
         passthrough(infile, outfile)
         return
@@ -1820,11 +1826,11 @@ def main() -> None:
         ),
     )
 
-    parser.add_argument("--osslsigncode-tool", default="osslsigncode")
+    parser.add_argument("--osslsigncode-tool", default="")
     parser.add_argument("--cosign-tool", default="")
     parser.add_argument("--openssl-tool", default="")
-    parser.add_argument("--codesign-tool", default="codesign")
-    parser.add_argument("--jarsigner-tool", default="jarsigner")
+    parser.add_argument("--codesign-tool", default="")
+    parser.add_argument("--jarsigner-tool", default="")
     parser.add_argument(
         "--timestamp-url",
         default="",

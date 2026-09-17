@@ -117,6 +117,7 @@ class SignToolUnitTest(unittest.TestCase):
             osslsigncode_tool = "fake-osslsigncode"
             cosign_tool = "fake-cosign"
             codesign_tool = "fake-codesign"
+            jarsigner_tool = "fake-jarsigner"
             timestamp_url = "https://timestamp.example.invalid"
             name = "Example"
             url = "https://example.invalid"
@@ -875,6 +876,50 @@ class SignToolUnitTest(unittest.TestCase):
                     identity="",
                 )
             self.assertIn("codesign tool path is required", str(ctx.exception))
+
+    def test_osslsigncode_requires_a_resolved_toolchain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            in_exe = root / "app.exe"
+            in_exe.write_text("EXE\n", encoding="utf-8")
+
+            args = self._args()
+            args.osslsigncode_tool = ""
+
+            with self.assertRaises(ValueError) as ctx:
+                sign_tool.sign_one(
+                    tool_mode="auto",
+                    relpath="app.exe",
+                    infile=str(in_exe),
+                    outfile=str(root / "out" / "app.exe"),
+                    args=args,
+                    cert_path="",
+                    password="",
+                    identity="",
+                )
+            self.assertIn("osslsigncode tool path is required", str(ctx.exception))
+
+    def test_jarsigner_requires_a_resolved_toolchain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            in_jar = root / "app.jar"
+            in_jar.write_text("JAR\n", encoding="utf-8")
+
+            args = self._args()
+            args.jarsigner_tool = ""
+
+            with self.assertRaises(ValueError) as ctx:
+                sign_tool.sign_one(
+                    tool_mode="auto",
+                    relpath="app.jar",
+                    infile=str(in_jar),
+                    outfile=str(root / "out" / "app.jar"),
+                    args=args,
+                    cert_path="",
+                    password="",
+                    identity="",
+                )
+            self.assertIn("jarsigner tool path is required", str(ctx.exception))
 
     def test_tree_mode_preserves_relative_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
