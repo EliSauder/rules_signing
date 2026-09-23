@@ -14,7 +14,7 @@ bazel_dep(name = "package_metadata", version = "0.0.13")
 # of downstream build graphs (`rules_oci` in particular would otherwise pull
 # aspect_bazel_lib, tar.bzl, jq.bzl, yq.bzl and gawk along with it). The
 # `usagetest/` consumer module declares its own `rules_oci` for the same reason.
-bazel_dep(name = "rules_cc", version = "0.2.22", dev_dependency = True)
+bazel_dep(name = "rules_cc", version = "0.2.25", dev_dependency = True)
 bazel_dep(name = "rules_oci", version = "2.3.0", dev_dependency = True)
 
 # `build_test` / `copy_file` in `//signing/tests`. Nothing a consumer loads
