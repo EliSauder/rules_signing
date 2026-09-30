@@ -52,7 +52,7 @@ bazel_dep(name = "rules_kotlin", version = "2.4.10", dev_dependency = True)
 # rules_kotlin resolves a JDK through rules_java, which defaults to the host's
 # `local_jdk` -- absent on a bare CI runner. A remote JDK keeps the fixture
 # hermetic instead of depending on what happens to be installed.
-bazel_dep(name = "rules_java", version = "9.3.0", dev_dependency = True)
+bazel_dep(name = "rules_java", version = "9.9.0", dev_dependency = True)
 
 java_toolchains = use_extension(
     "@rules_java//java:extensions.bzl",
