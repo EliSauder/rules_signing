@@ -472,18 +472,18 @@ def passthrough(src: str, out: str) -> None:
         for root, dirs, files in os.walk(out):
             for dname in dirs:
                 dpath = pathlib.Path(root) / dname
-                dpath.chmod(dpath.stat().st_mode | stat.S_IWUSR)
+                dpath.chmod(dpath.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
             for fname in files:
                 fpath = pathlib.Path(root) / fname
                 if not fpath.is_symlink():
-                    fpath.chmod(fpath.stat().st_mode | stat.S_IWUSR)
-        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR)
+                    fpath.chmod(fpath.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR)
+        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
         return
     ensure_parent(out)
     shutil.copy2(src, out)
     out_path = pathlib.Path(out)
     if not out_path.is_symlink():
-        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR)
+        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR)
 
 
 def render_cert_material(
@@ -966,7 +966,7 @@ def sign_with_codesign(
         # rcodesign ever opens the file, and pointing it at its own copy as
         # both input and output avoids rcodesign's copy path entirely.
         shutil.copy2(infile, outfile)
-        os.chmod(outfile, os.stat(outfile).st_mode | stat.S_IWUSR)
+        os.chmod(outfile, os.stat(outfile).st_mode | stat.S_IWUSR | stat.S_IRUSR)
         sign_infile = outfile
 
     cmd.extend([sign_infile, outfile])
