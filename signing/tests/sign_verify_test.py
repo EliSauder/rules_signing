@@ -31,6 +31,10 @@ _REPO = "rules_signing"
 _ARGS = argparse.Namespace()
 _RUNFILES = Runfiles.Create()
 
+env = os.environ.copy()
+env['LC_ALL'] = 'C'
+env['LANG'] = 'C'
+env['JAVA_TOOL_OPTIONS'] = '-Duser.language=en -Duser.country=US'
 
 def _rlocation(rootpath: str) -> str:
     """Resolves a rootpath into a real filesystem path.
@@ -57,6 +61,7 @@ def _run(cmd, **kwargs):
         capture_output=True,
         text=True,
         check=False,
+        env=env,
         **kwargs,
     )
 
