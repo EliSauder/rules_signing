@@ -6,7 +6,6 @@ import shutil
 import stat
 import tempfile
 import unittest
-import zipfile
 from unittest import mock
 
 from python.runfiles import runfiles
@@ -313,38 +312,42 @@ class SignToolUnitTest(unittest.TestCase):
             self.assertEqual(out.read_bytes(), b"not a PE\n")
             self.assertFalse(pathlib.Path(str(out) + ".sig").exists())
 
-    def test_a_linker_signature_is_not_an_identity_signature(self) -> None:
-        """Every arm64 Mach-O is ad-hoc signed by its linker; it gets signed."""
+    def test_each_signers_tool_decides_whether_a_file_is_signed(self) -> None:
+        """The tools' own verdicts, as they print them, decide sign-once.
 
-        macho, _ = _binary_fixtures()
-        self.assertFalse(
-            sign_tool.has_embedded_signature("codesign", macho, self._args())
-        )
+        Ad-hoc and linker Mach-O signatures (every arm64 binary has one) carry
+        no CMS blob and so no identity, and are signed over.
+        """
 
-    def test_a_jar_is_signed_once(self) -> None:
-        """A `.SF` file under META-INF is what a jar signature consists of."""
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            for name, entries, signed in (
-                ("plain.jar", ["META-INF/MANIFEST.MF"], False),
-                ("signed.jar", ["META-INF/MANIFEST.MF", "META-INF/VENDOR.SF"], True),
-                ("not_a_zip.jar", None, False),
-            ):
-                jar = root / name
-                if entries is None:
-                    jar.write_bytes(b"not a zip\n")
-                else:
-                    with zipfile.ZipFile(jar, "w") as z:
-                        for entry in entries:
-                            z.writestr(entry, "")
-                with self.subTest(jar=name):
+        unsigned_macho = "  code_directory:\n    flags: CodeSignatureFlags(ADHOC | LINKER_SIGNED)\n  cms: null\n"
+        signed_macho = "  - slot: CMS Signature (65536)\n  cms:\n    signers:\n"
+        cases = [
+            ("osslsigncode", (0, ""), True),
+            ("osslsigncode", (255, "Failed"), False),
+            ("codesign", (0, signed_macho), True),
+            ("codesign", (0, unsigned_macho), False),
+            ("codesign", (1, "Error: specified path is not of a recognized type"), False),
+            ("jarsigner", (0, "jar verified.\n"), True),
+            ("jarsigner", (0, "\njar is unsigned.\n"), False),
+            ("jarsigner", (1, "jarsigner: java.util.zip.ZipException"), False),
+            ("jarsigner", None, False),
+        ]
+        with tempfile.NamedTemporaryFile() as f:
+            for signer, output, signed in cases:
+                with (
+                    self.subTest(signer=signer, output=output),
+                    mock.patch.object(sign_tool, "_tool_output", return_value=output),
+                ):
                     self.assertEqual(
-                        sign_tool.has_embedded_signature(
-                            "jarsigner", str(jar), self._args()
-                        ),
+                        sign_tool.has_embedded_signature(signer, f.name, self._args()),
                         signed,
                     )
+
+    def test_a_tool_that_cannot_run_is_left_to_signing_to_report(self) -> None:
+        """A missing or unrunnable tool is not mistaken for a signed file."""
+
+        _, pe = _binary_fixtures()
+        self.assertFalse(sign_tool.has_embedded_signature("osslsigncode", pe, self._args()))
 
     def test_an_already_signed_binary_is_delivered_unchanged(self) -> None:
         """The existing signature is kept; the planned detached one is added."""

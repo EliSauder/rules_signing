@@ -337,7 +337,7 @@ class SignOutputShapeTest(unittest.TestCase):
         The runtime identifier and the apphost's name follow the platform, so
         they are read back rather than pinned. `built` is the sidecars the
         assemblies get; excluded files never get any. `apphost` overrides the
-        apphost's, which otherwise follow how its format is signed.
+        apphost's expectation.
         """
 
         prefix = "signing/tests/dotnet/publish/publish/"
@@ -354,10 +354,11 @@ class SignOutputShapeTest(unittest.TestCase):
         name = "app.exe" if sys.platform == "win32" else "app"
         if apphost is not None:
             expected[out + name] = apphost
-        elif sys.platform in ("win32", "darwin"):
+        elif sys.platform == "win32":
             expected[out + name] = built
         else:
-            # ELF has no embedded signature, so the apphost gets cosign's.
+            # No rule vouches for the apphost, and without an extension its
+            # name says nothing, so it gets cosign's detached signature.
             expected[out + name] = _SIDECARS
         return expected
 

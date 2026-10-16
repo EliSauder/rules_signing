@@ -12,12 +12,10 @@ import pathlib
 import re
 import shutil
 import stat
-import struct
 import subprocess
 import sys
 import tempfile
 import urllib.parse
-import zipfile
 import lief
 
 from typing import Dict, Iterable, Optional, Sequence, Tuple
@@ -80,26 +78,22 @@ def sniff_binary_format(path: str) -> str:
     return ""
 
 
-# A Mach-O code signature superblob slot holding the CMS signature. Ad-hoc
-# and linker signatures -- which every arm64 binary carries -- leave it
-# absent or as an empty 8-byte blob; only an identity's signature fills it.
-_MACHO_CMS_SLOT = 0x10000
+def _tool_output(cmd: Sequence[str]) -> Optional[Tuple[int, str]]:
+    """Runs a read-only check, or returns None if the tool can't be run."""
 
-
-def _macho_has_identity_signature(path: str) -> bool:
-    fat = lief.MachO.parse(path)
-    for binary in fat:
-        if not binary.has_code_signature:
-            continue
-        blob = bytes(binary.code_signature.content)
-        (count,) = struct.unpack(">I", blob[8:12])
-        for i in range(count):
-            slot, offset = struct.unpack(">II", blob[12 + 8 * i : 20 + 8 * i])
-            if slot == _MACHO_CMS_SLOT:
-                (length,) = struct.unpack(">I", blob[offset + 4 : offset + 8])
-                if length > 8:
-                    return True
-    return False
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+    except OSError:
+        # Unusable here, e.g. a fake in a unit test: signing will then report
+        # a missing or broken toolchain itself.
+        return None
+    return result.returncode, result.stdout
 
 
 def has_embedded_signature(signer: str, path: str, args: argparse.Namespace) -> bool:
@@ -107,43 +101,44 @@ def has_embedded_signature(signer: str, path: str, args: argparse.Namespace) -> 
 
     Files are signed once: whoever signed a file first -- a vendor, Microsoft,
     another build step -- keeps their signature, and re-signing it would
-    replace their identity with ours. Only regular files are checked, which
-    includes each file walked out of a directory; what is signed as a unit
-    (bundles, flat packages, disk images) is signed as before.
+    replace their identity with ours. Each signer's own tool answers the
+    question. Only regular files are checked, which includes each file walked
+    out of a directory; what is signed as a unit (bundles, flat packages, disk
+    images) is signed as before.
     """
 
     if not os.path.isfile(path):
         return False
-    if signer == "osslsigncode":
-        if not os.access(args.osslsigncode_tool or "", os.X_OK):
-            # Signing reports the missing toolchain itself.
-            return False
-        # Exits 0 only when a signature exists, for every format osslsigncode
-        # signs, which is the same set of formats it would be replacing.
+
+    if signer == "osslsigncode" and args.osslsigncode_tool:
+        # Exits 0 only when there is a signature to extract.
         with tempfile.TemporaryDirectory() as tmp:
-            result = subprocess.run(
-                [
-                    args.osslsigncode_tool,
-                    "extract-signature",
-                    "-in",
-                    path,
-                    "-out",
-                    os.path.join(tmp, "signature"),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        return result.returncode == 0
-    if signer == "codesign":
-        return lief.is_macho(path) and _macho_has_identity_signature(path)
-    if signer == "jarsigner":
-        if not zipfile.is_zipfile(path):
-            return False
-        with zipfile.ZipFile(path) as jar:
-            return any(
-                n.upper().startswith("META-INF/") and n.upper().endswith(".SF")
-                for n in jar.namelist()
-            )
+            out = _tool_output([
+                args.osslsigncode_tool,
+                "extract-signature",
+                "-in",
+                path,
+                "-out",
+                os.path.join(tmp, "signature"),
+            ])
+        return out is not None and out[0] == 0
+
+    if signer == "codesign" and args.codesign_tool:
+        # rcodesign reports a signature's CMS blob, which is what carries an
+        # identity. Ad-hoc and linker signatures -- every arm64 binary has
+        # one -- print `cms: null`, and are signed over like unsigned files.
+        out = _tool_output([args.codesign_tool, "print-signature-info", path])
+        return (
+            out is not None
+            and out[0] == 0
+            and re.search(r"^\s*cms:\s*$", out[1], re.MULTILINE) is not None
+        )
+
+    if signer == "jarsigner" and args.jarsigner_tool:
+        # Exits 0 for unsigned jars too, so only the verdict line tells.
+        out = _tool_output([args.jarsigner_tool, "-verify", path])
+        return out is not None and out[0] == 0 and "jar is unsigned" not in out[1]
+
     return False
 
 

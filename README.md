@@ -393,13 +393,13 @@ for yours. Instead the file is delivered byte for byte as it arrived. This
 makes it safe to sign whole outputs that mix your code with someone else's,
 such as a `publish_binary` directory or a deploy jar's dependencies.
 
-What counts as "already signed":
+Each signer's own tool decides what counts as "already signed":
 
 | Format | Signer | Already signed when |
 | --- | --- | --- |
 | PE, MSI, CAB, scripts, … | osslsigncode | `osslsigncode extract-signature` finds an Authenticode signature |
-| Mach-O | codesign | the code signature has a non-empty CMS blob, i.e. an identity signed it |
-| Jar | jarsigner | it contains a `META-INF/*.SF` signature file |
+| Mach-O | codesign | `rcodesign print-signature-info` shows a CMS signature, i.e. an identity signed it |
+| Jar | jarsigner | `jarsigner -verify` doesn't report `jar is unsigned` |
 
 Ad-hoc signatures don't count, since they carry no identity. That includes the
 one every arm64 Mach-O gets from its linker, so freshly built Mach-O binaries are
