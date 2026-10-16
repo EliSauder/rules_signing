@@ -68,6 +68,14 @@ class StrongNameTrustTest(unittest.TestCase):
         _, release_public_key = _read_identity(_ARGS.signed)
         self.assertEqual(public_snk, release_public_key)
 
+    def test_key_pair_is_a_signature_key(self):
+        # Microsoft's `sn -p` copies the key pair's algorithm ID into the public
+        # key (Mono's always writes CALG_RSA_SIGN), so it must be CALG_RSA_SIGN
+        # as `sn -k` writes, or the extracted public key has another token.
+        with open(_resolve(_ARGS.key_pair), "rb") as handle:
+            header = handle.read(8)
+        self.assertEqual(header[4:8], (0x2400).to_bytes(4, "little"))
+
     def test_friend_assembly_identity_is_accepted(self):
         with open(_resolve(_ARGS.friend), "r") as handle:
             self.assertEqual(handle.read().strip(), "friend access granted")
@@ -81,7 +89,7 @@ class StrongNameTrustTest(unittest.TestCase):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    for name in ("signed", "delay-signed", "public-signed", "friend", "public-snk"):
+    for name in ("signed", "delay-signed", "public-signed", "friend", "public-snk", "key-pair"):
         parser.add_argument("--" + name, required=True)
     parsed, remaining = parser.parse_known_args(sys.argv[1:])
     _ARGS.__dict__.update(vars(parsed))

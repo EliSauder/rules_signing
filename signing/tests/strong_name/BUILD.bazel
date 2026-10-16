@@ -105,8 +105,10 @@ py_test(
         "--public-signed=$(rootpath :public_signed_app_output)",
         "--friend=$(rootpath :friend_app_output)",
         "--public-snk=$(rootpath :company_a_public_key)",
+        "--key-pair=$(rootpath :company_a_key_pair)",
     ],
     data = [
+        ":company_a_key_pair",
         ":company_a_public_key",
         ":delay_signed_app_output",
         ":friend_app_output",
