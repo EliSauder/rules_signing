@@ -638,6 +638,40 @@ Two things follow from the certificate being generated rather than supplied:
   Pin it with `certificate(certificate_file = ...)` if you need a credential
   that outlives your output tree.
 
+### Converting a certificate to another format
+
+A `certificate` (or `self_signed_certificate`) can be re-expressed in the
+formats other tools want. Each rule takes the target through `certificate` and
+needs the openssl toolchain. Conversions are never cached, locally or remotely,
+since their outputs hold the private key:
+
+| Rule | Outputs | Notes |
+| --- | --- | --- |
+| `certificate_pem` | `<name>.pem` | Unencrypted key + certificate (+ `ca_file` chain); also `certificate_only` output group. Provides `SigningCertificateInfo`. |
+| `certificate_p12` | `<name>.p12` | PKCS#12 protected by `password`/`password_env` (default: the input's), with `alias`. Provides `SigningCertificateInfo`. |
+| `certificate_keystore` | `<name>.keystore` | PKCS#12 keystore for `jarsigner`/`keytool`, key stored under `alias`. |
+| `certificate_snk` | `<name>.snk`, `<name>.public.snk` | .NET strong-name key pair and public-only key. RSA keys only. |
+| `certificate_keypair` | `<name>.key`, `<name>.pub`, `<name>.crt` | cosign key pair; the key is protected by `password` and works with `cosign --key` (needs the cosign toolchain). For a plain PEM key use `certificate_pem`. |
+
+```starlark
+load("@rules_signing//signing:defs.bzl", "certificate_snk", "self_signed_certificate")
+
+self_signed_certificate(name = "dev_cert")
+
+certificate_snk(
+    name = "dev_snk",
+    certificate = ":dev_cert",
+)
+```
+
+`certificate_snk` converts the key with a small .NET program that rules_signing
+builds with rules_dotnet's toolchain.
+
+The `.snk` can then be used as `<AssemblyOriginatorKeyFile>`, and the
+`.public.snk` for `<PublicSign>`/`<DelaySign>`. The `.public.snk` has the same
+format as `sn -p` output, so assemblies built from it get the same public key
+token as those signed with the key pair.
+
 ### Issuing chains
 
 Verifiers need every certificate between the leaf and the trust anchor. The leaf

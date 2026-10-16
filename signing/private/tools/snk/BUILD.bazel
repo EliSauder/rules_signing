@@ -1,0 +1,10 @@
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary")
+
+# Converts an RSA private key to .NET strong-name key files, for
+# `certificate_snk`.
+csharp_binary(
+    name = "snk_tool",
+    srcs = ["SnkTool.cs"],
+    target_frameworks = ["net9.0"],
+    visibility = ["//signing:__subpackages__"],
+)

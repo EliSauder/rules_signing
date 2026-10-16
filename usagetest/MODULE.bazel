@@ -29,15 +29,18 @@ use_repo(python, "python_3_12")
 # rules_signing registers no signing toolchains of its own, so a consumer picks
 # its tool versions and registers them explicitly.
 signing_tools = use_extension("@rules_signing//signing:extensions.bzl", "signing_tools")
+signing_tools.openssl(path = "openssl")
 use_repo(
     signing_tools,
     "signing_cosign",
+    "signing_openssl",
     "signing_osslsigncode",
 )
 
 register_toolchains(
     "@signing_osslsigncode//:osslsigncode_toolchain",
     "@signing_cosign//:cosign_toolchain",
+    "@signing_openssl//:openssl_toolchain",
 )
 
 # Deliberately register only the upstream type, not rules_signing's adapter.

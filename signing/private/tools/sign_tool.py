@@ -428,19 +428,17 @@ def resolve_cosign_key(
     prefix = pathlib.Path(tmpdir) / "cosign-imported"
     imported = prefix.with_suffix(".key")
     if not imported.is_file():
-        run_cmd(
-            [
-                tool,
-                "import-key-pair",
-                "--key",
-                cert_path,
-                "--output-key-prefix",
-                str(prefix),
-                "--yes",
-            ],
-            env=cosign_env(password),
-        )
+        import_cosign_key(tool, cert_path, prefix, password)
     return str(imported)
+
+
+def import_cosign_key(tool: str, key: str, prefix: pathlib.Path, password: str) -> None:
+    """Rewraps a PEM private key as cosign's `<prefix>.key` and `<prefix>.pub`."""
+
+    run_cmd(
+        [tool, "import-key-pair", "--key", key, "--output-key-prefix", str(prefix), "--yes"],
+        env=cosign_env(password),
+    )
 
 
 def cosign_env(password: str) -> Dict[str, str]:
@@ -1017,32 +1015,41 @@ def jarsigner_keystore(
             "single certificate' section of the rules_signing README."
         )
 
+    export_pkcs12(openssl, pem_path, str(keystore), password, password, _JARSIGNER_ALIAS, ca_path)
+    return str(keystore)
+
+
+def export_pkcs12(
+    openssl: str,
+    pem_path: str,
+    out: str,
+    password: str,
+    out_password: str,
+    alias: str,
+    ca_path: str = "",
+) -> None:
+    """Packs a unified PEM into a PKCS#12 holding the key under `alias`.
+
+    `ca_path` is appended as extra chain certificates, which is what jarsigner
+    embeds in the signature block, so a verifier can build a path to the root.
+    """
+
     env = dict(os.environ)
-    env["RULES_SIGNING_JARSIGNER_PASSWORD"] = password
+    env["RULES_SIGNING_KEY_PASSWORD"] = password
+    env["RULES_SIGNING_P12_PASSWORD"] = out_password
     cmd = [
-        openssl,
-        "pkcs12",
-        "-export",
-        "-in",
-        pem_path,
-        "-inkey",
-        pem_path,
-        "-name",
-        _JARSIGNER_ALIAS,
-        "-passout",
-        "env:RULES_SIGNING_JARSIGNER_PASSWORD",
-        "-out",
-        str(keystore),
+        openssl, "pkcs12", "-export",
+        "-in", pem_path, "-inkey", pem_path,
+        "-name", alias,
+        "-passin", "env:RULES_SIGNING_KEY_PASSWORD",
+        "-passout", "env:RULES_SIGNING_P12_PASSWORD",
+        # See `gen_self_signed_mode` for why the ciphers are explicit.
+        "-certpbe", "AES-256-CBC", "-keypbe", "AES-256-CBC",
+        "-out", out,
     ]
     if ca_path:
-        # Appends the issuing chain as additional certificates in the
-        # keystore entry, so a verifier can build a path to the root without
-        # having to source the intermediates itself -- the same guarantee
-        # `-ac`/rcodesign's extra-certificates option gives the other two
-        # native signers.
         cmd.extend(["-certfile", ca_path])
     run_cmd(cmd, env=env)
-    return str(keystore)
 
 
 def sign_with_jarsigner(
@@ -1710,6 +1717,111 @@ def gen_self_signed_mode(args: argparse.Namespace) -> None:
             pathlib.Path(args.public_key_out).write_text(pubkey, encoding="utf-8")
 
 
+def convert_mode(args: argparse.Namespace) -> None:
+    """Handles `--mode convert`.
+
+    Re-expresses an existing certificate (unified PEM or PKCS#12) in another
+    format. Everything is normalized to a unified PEM first so each output
+    format has a single source to read from.
+    """
+
+    if not args.openssl_tool:
+        raise SystemExit(
+            "sign_tool: converting certificates requires the openssl "
+            "toolchain. Register it with:\n"
+            "    signing_tools.openssl(path = \"openssl\")\n"
+            "    register_toolchains(\"@signing_openssl//:openssl_toolchain\")"
+        )
+    if not args.cert_file or os.path.getsize(args.cert_file) == 0:
+        raise SystemExit("sign_tool: the certificate has no material to convert")
+
+    stamps = load_stamp_files([args.info_file, args.version_file])
+    defaults = parse_defaults(args.stamp_default)
+    password = resolve_password(
+        password_template=args.password_template,
+        password_env=args.password_env,
+        stamps=stamps,
+        defaults=defaults,
+    )
+    out_password = resolve_password(
+        password_template=args.out_password_template,
+        password_env=args.out_password_env,
+        stamps=stamps,
+        defaults=defaults,
+    )
+    if not (args.out_password_template or args.out_password_env):
+        out_password = password
+
+    openssl = args.openssl_tool
+    fmt = args.convert_format
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        if is_pem_certificate(args.cert_file):
+            pem_path = args.cert_file
+        else:
+            pem_path = pkcs12_to_pem(
+                args.cert_file, password, tmpdir, openssl, include_certs=True
+            )
+
+        key_env = dict(os.environ)
+        key_env["RULES_SIGNING_KEY_PASSWORD"] = password
+        key_pass = ["-passin", "env:RULES_SIGNING_KEY_PASSWORD"]
+
+        def private_key_pem() -> str:
+            return run_cmd_capture(
+                [openssl, "pkey", "-in", pem_path] + key_pass, env=key_env
+            )
+
+        ensure_parent(args.out)
+        if fmt == "pem":
+            # Decrypted key, then certificates, then the issuing chain.
+            data = private_key_pem() + run_cmd_capture(
+                [openssl, "x509", "-in", pem_path]
+            )
+            if args.ca_file:
+                data += pathlib.Path(args.ca_file).read_text(encoding="utf-8")
+            pathlib.Path(args.out).write_text(data, encoding="utf-8")
+        elif fmt in ("p12", "keystore"):
+            export_pkcs12(
+                openssl, pem_path, args.out, password, out_password,
+                args.alias or _JARSIGNER_ALIAS, args.ca_file,
+            )
+        elif fmt == "snk":
+            if not args.snk_tool:
+                raise SystemExit("sign_tool: --convert-format snk needs --snk-tool")
+            plain_key = pathlib.Path(tmpdir) / "plain-key.pem"
+            plain_key.write_text(private_key_pem(), encoding="utf-8")
+            ensure_parent(args.public_key_out)
+            # On Windows the converter is a .bat launcher, which cmd.exe can
+            # only run from a native (backslash) path.
+            cmd = [os.path.abspath(args.snk_tool), str(plain_key), args.out, args.public_key_out]
+            # The converter is itself a runfiles-aware launcher; the variables
+            # inherited from this tool's own runfiles would point it at the
+            # wrong tree.
+            env = {k: v for k, v in os.environ.items() if not k.startswith("RUNFILES_")}
+            run_cmd(cmd, env=env)
+        elif fmt == "cosign":
+            if not args.cosign_tool:
+                raise SystemExit("sign_tool: --convert-format cosign needs --cosign-tool")
+            plain_key = pathlib.Path(tmpdir) / "plain-key.pem"
+            plain_key.write_text(private_key_pem(), encoding="utf-8")
+            prefix = pathlib.Path(tmpdir) / "cosign-keypair"
+            import_cosign_key(args.cosign_tool, str(plain_key), prefix, out_password)
+            pathlib.Path(args.out).write_bytes(prefix.with_suffix(".key").read_bytes())
+            if args.public_key_out:
+                ensure_parent(args.public_key_out)
+                pathlib.Path(args.public_key_out).write_bytes(
+                    prefix.with_suffix(".pub").read_bytes()
+                )
+        else:
+            raise SystemExit("sign_tool: unknown --convert-format {!r}".format(fmt))
+
+        if args.cert_out:
+            ensure_parent(args.cert_out)
+            cert = run_cmd_capture([openssl, "x509", "-in", pem_path])
+            pathlib.Path(args.cert_out).write_text(cert, encoding="utf-8")
+
+
 def sign_mode(args: argparse.Namespace) -> None:
     """Handles `--mode sign`.
 
@@ -1809,7 +1921,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=("sign", "resolve-cert", "gen-self-signed"),
+        choices=("sign", "resolve-cert", "gen-self-signed", "convert"),
         default="sign",
     )
     # Expanded by expand_argfiles before argparse runs; declared here so it
@@ -1884,6 +1996,13 @@ def main() -> None:
     parser.add_argument("--info-file", default="")
     parser.add_argument("--version-file", default="")
 
+    # --mode convert
+    parser.add_argument("--convert-format", choices=("pem", "p12", "keystore", "snk", "cosign"), default="pem")
+    parser.add_argument("--alias", default="")
+    parser.add_argument("--snk-tool", default="")
+    parser.add_argument("--out-password-template", default="")
+    parser.add_argument("--out-password-env", default="")
+
     # --mode gen-self-signed
     parser.add_argument("--cert-out", default="")
     parser.add_argument("--public-key-out", default="")
@@ -1911,6 +2030,10 @@ def main() -> None:
 
     if args.mode == "gen-self-signed":
         gen_self_signed_mode(args)
+        return
+
+    if args.mode == "convert":
+        convert_mode(args)
         return
 
     sign_mode(args)

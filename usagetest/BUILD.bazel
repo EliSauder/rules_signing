@@ -1,6 +1,15 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_python//python:defs.bzl", "py_test")
-load("@rules_signing//signing:defs.bzl", "sign")
+load(
+    "@rules_signing//signing:defs.bzl",
+    "certificate_keypair",
+    "certificate_keystore",
+    "certificate_p12",
+    "certificate_pem",
+    "certificate_snk",
+    "self_signed_certificate",
+    "sign",
+)
 load(":toolchain_test.bzl", "missing_codesign_test", "missing_jarsigner_test")
 
 genrule(
@@ -89,4 +98,61 @@ py_test(
         "@platforms//os:windows": [],
         "//conditions:default": [":signed_oci_image"],
     }),
+)
+
+# Certificate format conversions, consumed as a downstream module. Needs the
+# openssl toolchain (and cosign for the key pair), which this module registers.
+self_signed_certificate(
+    name = "dev_cert",
+    common_name = "rules_signing consumer test",
+)
+
+certificate_pem(
+    name = "dev_cert_pem",
+    certificate = ":dev_cert",
+)
+
+certificate_p12(
+    name = "dev_cert_p12",
+    certificate = ":dev_cert",
+    password = "consumer-test",
+)
+
+certificate_keystore(
+    name = "dev_cert_keystore",
+    certificate = ":dev_cert",
+    password = "consumer-test",
+)
+
+certificate_snk(
+    name = "dev_cert_snk",
+    certificate = ":dev_cert",
+)
+
+certificate_keypair(
+    name = "dev_cert_keypair",
+    certificate = ":dev_cert",
+    password = "consumer-test",
+)
+
+py_test(
+    name = "verify_certificate_formats_test",
+    size = "small",
+    srcs = ["verify_certificate_formats_test.py"],
+    args = [
+        "--pem=$(rootpath :dev_cert_pem)",
+        "--p12=$(rootpath :dev_cert_p12)",
+        "--keystore=$(rootpath :dev_cert_keystore)",
+        "--snk",
+        "$(rootpaths :dev_cert_snk)",
+        "--keypair",
+        "$(rootpaths :dev_cert_keypair)",
+    ],
+    data = [
+        ":dev_cert_keypair",
+        ":dev_cert_keystore",
+        ":dev_cert_p12",
+        ":dev_cert_pem",
+        ":dev_cert_snk",
+    ],
 )

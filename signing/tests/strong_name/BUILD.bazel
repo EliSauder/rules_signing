@@ -1,0 +1,153 @@
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary", "csharp_library")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("//signing:defs.bzl", "certificate_snk")
+
+# A fixed test certificate, so every configuration (target, exec, and the
+# transition rules_dotnet applies to `keyfile`) sees the same key.
+certificate_snk(
+    name = "company_a_snk",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+)
+
+[
+    filegroup(
+        name = "company_a_" + group,
+        srcs = [":company_a_snk"],
+        output_group = group,
+    )
+    for group in [
+        "key_pair",
+        "public_key",
+    ]
+]
+
+# Compiled with the converted strong-name key, so a bad .snk fails the build.
+csharp_binary(
+    name = "strong_named_app",
+    srcs = ["PrintPublicKey.cs"],
+    keyfile = ":company_a_key_pair",
+    target_frameworks = ["net9.0"],
+)
+
+csharp_binary(
+    name = "delay_signed_app",
+    srcs = ["PrintPublicKey.cs"],
+    compiler_options = ["/delaysign+"],
+    keyfile = ":company_a_public_key",
+    target_frameworks = ["net9.0"],
+)
+
+csharp_binary(
+    name = "public_signed_app",
+    srcs = ["PrintPublicKey.cs"],
+    compiler_options = ["/publicsign+"],
+    keyfile = ":company_a_public_key",
+    target_frameworks = ["net9.0"],
+)
+
+# Friend assemblies: `friend_lib` grants its internals to `friend_app` by the
+# public key in the .public.snk, and `friend_app` is signed with the key pair.
+# The C# compiler rejects the access (CS0281) unless the two keys agree.
+py_binary(
+    name = "friend_lib_source",
+    srcs = ["friend_lib_source.py"],
+)
+
+genrule(
+    name = "friend_lib_cs",
+    srcs = [":company_a_public_key"],
+    outs = ["FriendLib.cs"],
+    cmd = "$(execpath :friend_lib_source) $(execpath :company_a_public_key) $@",
+    tools = [":friend_lib_source"],
+)
+
+csharp_library(
+    name = "friend_lib",
+    srcs = [":friend_lib_cs"],
+    keyfile = ":company_a_key_pair",
+    target_frameworks = ["net9.0"],
+)
+
+csharp_binary(
+    name = "friend_app",
+    srcs = ["FriendApp.cs"],
+    keyfile = ":company_a_key_pair",
+    target_frameworks = ["net9.0"],
+    deps = [":friend_lib"],
+)
+
+py_test(
+    name = "strong_name_test",
+    size = "small",
+    srcs = [
+        "//signing:__init__.py",
+        "strong_name_test.py",
+    ],
+    args = [
+        "--signed=$(rlocationpath :strong_named_app)",
+        "--delay-signed=$(rlocationpath :delay_signed_app)",
+        "--public-signed=$(rlocationpath :public_signed_app)",
+        "--friend=$(rlocationpath :friend_app)",
+        "--public-snk=$(rlocationpath :company_a_public_key)",
+        "--key-pair=$(rlocationpath :company_a_key_pair)",
+    ],
+    data = [
+        ":company_a_key_pair",
+        ":company_a_public_key",
+        ":delay_signed_app",
+        ":friend_app",
+        ":public_signed_app",
+        ":strong_named_app",
+    ],
+    deps = ["@rules_python//python/runfiles"],
+)
+
+# Checks the outputs with the strong-name tool `sn`: Microsoft's sn.exe from the
+# Windows SDK (NETFX tools) on Windows, and Mono's sn elsewhere. Neither ships
+# with the .NET SDK, so both are taken from the host.
+_SN_TEST_ARGS = [
+    "--signed-assembly=$(rlocationpath :strong_named_app)",
+    "--delay-signed-assembly=$(rlocationpath :delay_signed_app)",
+    "--key-pair=$(rlocationpath :company_a_key_pair)",
+    "--public-snk=$(rlocationpath :company_a_public_key)",
+]
+
+_SN_TEST_DATA = [
+    ":company_a_key_pair",
+    ":company_a_public_key",
+    ":delay_signed_app",
+    ":strong_named_app",
+]
+
+py_test(
+    name = "microsoft_sn_test",
+    size = "small",
+    srcs = [
+        "//signing:__init__.py",
+        "sn_test.py",
+    ],
+    args = ["--sn=microsoft"] + _SN_TEST_ARGS,
+    data = _SN_TEST_DATA,
+    main = "sn_test.py",
+    target_compatible_with = ["@platforms//os:windows"],
+    deps = ["@rules_python//python/runfiles"],
+)
+
+# Needs Mono's `sn` on PATH (CI installs mono-devel), so it is run explicitly.
+py_test(
+    name = "mono_sn_test",
+    size = "small",
+    srcs = [
+        "//signing:__init__.py",
+        "sn_test.py",
+    ],
+    args = ["--sn=mono"] + _SN_TEST_ARGS,
+    data = _SN_TEST_DATA,
+    main = "sn_test.py",
+    tags = ["manual"],
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = ["@rules_python//python/runfiles"],
+)

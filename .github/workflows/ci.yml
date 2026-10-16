@@ -142,6 +142,12 @@ jobs:
         run: bazel test //... --verbose_failures --sandbox_debug --test_output=errors --test_summary=detailed  --flaky_test_attempts=5
       - name: Verify signing with the local JDK
         run: bazel test //signing/tests:sign_verify_test --extra_toolchains=//signing/toolchains:local_jarsigner_toolchain --test_output=errors
+      - name: Verify strong names with Mono's sn
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mono-devel
+          bazel test //signing/tests/strong_name:mono_sn_test --test_env=PATH --test_output=errors
   test-with-cache:
     needs: build-and-test
     strategy:
@@ -191,7 +197,7 @@ jobs:
       - name: Verify signing without a JDK
         if: matrix.module == 'usagetest'
         run: >-
-          bazel test //:verify_outputs_test //:missing_jarsigner_test //:missing_codesign_test
+          bazel test //:verify_outputs_test //:verify_certificate_formats_test //:missing_jarsigner_test //:missing_codesign_test
           --java_runtime_version=local_jdk --tool_java_runtime_version=local_jdk
           --repo_env=JAVA_HOME=${{ runner.temp }}/rules-signing-no-jdk
           --test_output=errors
@@ -206,7 +212,7 @@ jobs:
         if: matrix.module == 'usagetest_minimal'
         shell: bash
         run: |
-          unexpected="$(bazel cquery 'filter("rules_java|local_jdk|remotejdk|remote_jdk|codesign[.]bzl|tools/jdk|signing_openssl", deps(//:verify_signatures_test))' --output=label)"
+          unexpected="$(bazel cquery 'filter("rules_java|local_jdk|remotejdk|remote_jdk|codesign[.]bzl|tools/jdk|signing_openssl|rules_dotnet|dotnet", deps(//:verify_signatures_test))' --output=label)"
           if [ -n "$unexpected" ]; then
             printf 'Unexpected signing dependencies:\n%s\n' "$unexpected"
             exit 1
