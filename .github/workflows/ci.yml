@@ -191,7 +191,7 @@ jobs:
       - name: Verify signing without a JDK
         if: matrix.module == 'usagetest'
         run: >-
-          bazel test //:verify_outputs_test //:missing_jarsigner_test //:missing_codesign_test
+          bazel test //:verify_outputs_test //:verify_certificate_formats_test //:missing_jarsigner_test //:missing_codesign_test
           --java_runtime_version=local_jdk --tool_java_runtime_version=local_jdk
           --repo_env=JAVA_HOME=${{ runner.temp }}/rules-signing-no-jdk
           --test_output=errors
@@ -206,7 +206,7 @@ jobs:
         if: matrix.module == 'usagetest_minimal'
         shell: bash
         run: |
-          unexpected="$(bazel cquery 'filter("rules_java|local_jdk|remotejdk|remote_jdk|codesign[.]bzl|tools/jdk|signing_openssl", deps(//:verify_signatures_test))' --output=label)"
+          unexpected="$(bazel cquery 'filter("rules_java|local_jdk|remotejdk|remote_jdk|codesign[.]bzl|tools/jdk|signing_openssl|rules_dotnet|dotnet", deps(//:verify_signatures_test))' --output=label)"
           if [ -n "$unexpected" ]; then
             printf 'Unexpected signing dependencies:\n%s\n' "$unexpected"
             exit 1

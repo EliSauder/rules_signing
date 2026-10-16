@@ -141,6 +141,8 @@
     "https://bcr.bazel.build/modules/rules_cc/0.2.17/MODULE.bazel": "1849602c86cb60da8613d2de887f9566a6d354a6df6d7009f9d04a14402f9a84",
     "https://bcr.bazel.build/modules/rules_cc/0.2.17/source.json": "3832f45d145354049137c0090df04629d9c2b5493dc5c2bf46f1834040133a07",
     "https://bcr.bazel.build/modules/rules_cc/0.2.8/MODULE.bazel": "f1df20f0bf22c28192a794f29b501ee2018fa37a3862a1a2132ae2940a23a642",
+    "https://bcr.bazel.build/modules/rules_dotnet/0.22.2/MODULE.bazel": "ba1ef25468b67f7bace84064ac50a8380d9140e979a09b0548e7b29918b953be",
+    "https://bcr.bazel.build/modules/rules_dotnet/0.22.2/source.json": "2d493ac6964cbfdd58e2b9ae9512459cecfb85d52c344e96319e1aa04143d794",
     "https://bcr.bazel.build/modules/rules_foreign_cc/0.9.0/MODULE.bazel": "c9e8c682bf75b0e7c704166d79b599f93b72cfca5ad7477df596947891feeef6",
     "https://bcr.bazel.build/modules/rules_fuzzing/0.5.2/MODULE.bazel": "40c97d1144356f52905566c55811f13b299453a14ac7769dfba2ac38192337a8",
     "https://bcr.bazel.build/modules/rules_java/4.0.0/MODULE.bazel": "5a78a7ae82cd1a33cef56dc578c7d2a46ed0dca12643ee45edbb8417899e6f74",
@@ -202,6 +204,7 @@
     "https://bcr.bazel.build/modules/rules_shell/0.2.0/MODULE.bazel": "fda8a652ab3c7d8fee214de05e7a9916d8b28082234e8d2c0094505c5268ed3c",
     "https://bcr.bazel.build/modules/rules_shell/0.3.0/MODULE.bazel": "de4402cd12f4cc8fda2354fce179fdb068c0b9ca1ec2d2b17b3e21b24c1a937b",
     "https://bcr.bazel.build/modules/rules_shell/0.4.1/MODULE.bazel": "00e501db01bbf4e3e1dd1595959092c2fadf2087b2852d3f553b5370f5633592",
+    "https://bcr.bazel.build/modules/rules_shell/0.5.0/MODULE.bazel": "8c8447370594d45539f66858b602b0bb2cb2d3401a4ebb9ad25830c59c0f366d",
     "https://bcr.bazel.build/modules/rules_shell/0.6.1/MODULE.bazel": "72e76b0eea4e81611ef5452aa82b3da34caca0c8b7b5c0c9584338aa93bae26b",
     "https://bcr.bazel.build/modules/rules_shell/0.6.1/source.json": "20ec05cd5e592055e214b2da8ccb283c7f2a421ea0dc2acbf1aa792e11c03d0c",
     "https://bcr.bazel.build/modules/rules_swift/1.16.0/MODULE.bazel": "4a09f199545a60d09895e8281362b1ff3bb08bbde69c6fc87aff5b92fcc916ca",
@@ -253,6 +256,111 @@
               "urls": [
                 "https://github.com/pybind/pybind11/archive/v2.12.0.zip"
               ]
+            }
+          }
+        }
+      }
+    },
+    "@@rules_dotnet+//dotnet:extensions.bzl%dotnet": {
+      "general": {
+        "bzlTransitiveDigest": "uEHkcHo+qz0mZXMqN4Q7wBRkPontx/Bonzh6vyzfwyM=",
+        "usagesDigest": "qHxZeB8NSAokKqR+ZMLUOuVLJLp0vmb5n48ejTN5WCU=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "dotnet_x86_64-apple-darwin": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "x86_64-apple-darwin",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_aarch64-apple-darwin": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "aarch64-apple-darwin",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_x86_64-unknown-linux-gnu": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "x86_64-unknown-linux-gnu",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_arm64-unknown-linux-gnu": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "arm64-unknown-linux-gnu",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_x86_64-pc-windows-msvc": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "x86_64-pc-windows-msvc",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_arm64-pc-windows-msvc": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "arm64-pc-windows-msvc",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_toolchains": {
+            "repoRuleId": "@@rules_dotnet+//dotnet/private:toolchains_repo.bzl%toolchains_repo",
+            "attributes": {
+              "user_repository_name": "dotnet"
+            }
+          },
+          "dotnet_apphost_x86_64-apple-darwin": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "x86_64-apple-darwin",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_apphost_aarch64-apple-darwin": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "aarch64-apple-darwin",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_apphost_x86_64-unknown-linux-gnu": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "x86_64-unknown-linux-gnu",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_apphost_arm64-unknown-linux-gnu": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "arm64-unknown-linux-gnu",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_apphost_x86_64-pc-windows-msvc": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "x86_64-pc-windows-msvc",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_apphost_arm64-pc-windows-msvc": {
+            "repoRuleId": "@@rules_dotnet+//dotnet:repositories.bzl%dotnet_repositories",
+            "attributes": {
+              "platform": "arm64-pc-windows-msvc",
+              "dotnet_version": "10.0.201"
+            }
+          },
+          "dotnet_apphost_toolchains": {
+            "repoRuleId": "@@rules_dotnet+//dotnet/private:toolchains_repo.bzl%toolchains_repo",
+            "attributes": {
+              "user_repository_name": "dotnet_apphost"
             }
           }
         }
@@ -348,9 +456,15 @@
     "@@rules_signing+//signing:extensions.bzl%signing_tools": {
       "general": {
         "bzlTransitiveDigest": "NNbJoYbjxlvu1NdHZEVnWxMd2jfgLimNLWPA4YJD9+A=",
-        "usagesDigest": "29+rtHLDjqjaOIW60lWdoIJv0kBQaw9dQQetiWuyDrQ=",
+        "usagesDigest": "wYJ8l3mWWuqrxcTPu20QFYuNtq3t01b+cUS3fqjteyg=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
+          "signing_openssl": {
+            "repoRuleId": "@@rules_signing+//signing/toolchains:repositories.bzl%openssl_local_repo",
+            "attributes": {
+              "path": "openssl"
+            }
+          },
           "signing_cosign": {
             "repoRuleId": "@@rules_signing+//signing/toolchains:repositories.bzl%cosign_repo",
             "attributes": {
@@ -366,6 +480,7 @@
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [
+            "signing_openssl",
             "signing_cosign",
             "signing_osslsigncode"
           ],
