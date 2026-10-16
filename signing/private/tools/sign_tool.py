@@ -1795,10 +1795,8 @@ def convert_mode(args: argparse.Namespace) -> None:
                 raise SystemExit("sign_tool: --convert-format snk needs --snk-tool")
             plain_key = pathlib.Path(tmpdir) / "plain-key.pem"
             plain_key.write_text(private_key_pem(), encoding="utf-8")
-            cmd = [args.snk_tool, "--in", str(plain_key), "--out", args.out]
-            if args.public_key_out:
-                ensure_parent(args.public_key_out)
-                cmd.extend(["--public-out", args.public_key_out])
+            ensure_parent(args.public_key_out)
+            cmd = [args.snk_tool, str(plain_key), args.out, args.public_key_out]
             # The converter is itself a runfiles-aware launcher; the variables
             # inherited from this tool's own runfiles would point it at the
             # wrong tree.

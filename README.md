@@ -667,7 +667,9 @@ certificate_snk(
 builds with rules_dotnet's toolchain.
 
 The `.snk` can then be used as `<AssemblyOriginatorKeyFile>`, and the
-`.public.snk` for `<PublicSign>`/`<DelaySign>`.
+`.public.snk` for `<PublicSign>`/`<DelaySign>`. The `.public.snk` has the same
+format as `sn -p` output, so assemblies built from it get the same public key
+token as those signed with the key pair.
 
 ### Issuing chains
 

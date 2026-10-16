@@ -1,0 +1,72 @@
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary")
+load("@rules_python//python:defs.bzl", "py_test")
+
+# Compiled with the converted strong-name key, so a bad .snk fails the build.
+csharp_binary(
+    name = "strong_named_app",
+    srcs = ["PrintPublicKey.cs"],
+    keyfile = "//signing/tests:converted_snk_key_pair",
+    target_frameworks = ["net9.0"],
+)
+
+# Each app prints the public key its assembly ended up with.
+[
+    genrule(
+        name = name + "_public_key",
+        outs = [name + "_public_key.hex"],
+        cmd = "$(location :{}) > $@".format(name),
+        tools = [":" + name],
+    )
+    for name in [
+        "strong_named_app",
+        "delay_signed_app",
+        "public_signed_app",
+    ]
+]
+
+# rules_dotnet builds `keyfile` in the exec configuration, where the self-signed
+# test key is generated separately; take the public .snk from that same config.
+genrule(
+    name = "keyfile_public_snk",
+    outs = ["keyfile_public.snk"],
+    cmd = "cp $(execpath //signing/tests:converted_snk_public_key) $@",
+    tools = ["//signing/tests:converted_snk_public_key"],
+)
+
+py_test(
+    name = "strong_name_test",
+    size = "small",
+    srcs = [
+        "//signing:__init__.py",
+        "strong_name_test.py",
+    ],
+    args = [
+        "--signed=$(rootpath :strong_named_app_public_key)",
+        "--delay-signed=$(rootpath :delay_signed_app_public_key)",
+        "--public-signed=$(rootpath :public_signed_app_public_key)",
+        "--public-snk=$(rootpath :keyfile_public_snk)",
+    ],
+    data = [
+        ":keyfile_public_snk",
+        ":delay_signed_app_public_key",
+        ":public_signed_app_public_key",
+        ":strong_named_app_public_key",
+    ],
+    deps = ["@rules_python//python/runfiles"],
+)
+
+csharp_binary(
+    name = "delay_signed_app",
+    srcs = ["PrintPublicKey.cs"],
+    compiler_options = ["/delaysign+"],
+    keyfile = "//signing/tests:converted_snk_public_key",
+    target_frameworks = ["net9.0"],
+)
+
+csharp_binary(
+    name = "public_signed_app",
+    srcs = ["PrintPublicKey.cs"],
+    compiler_options = ["/publicsign+"],
+    keyfile = "//signing/tests:converted_snk_public_key",
+    target_frameworks = ["net9.0"],
+)

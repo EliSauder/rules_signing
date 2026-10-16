@@ -1,8 +1,7 @@
 """Verifies the `certificate_*` format conversion rules.
 
-Each output is read back with openssl, and the strong-name files are decoded
-by hand and compared with the source certificate's RSA modulus, since nothing
-else on a build host can read an `.snk`.
+Each output is read back with openssl or cosign. The strong-name files are
+checked separately in //signing/tests/strong_name by compiling with them.
 """
 
 import argparse
@@ -92,34 +91,12 @@ class CertificateFormatsTest(unittest.TestCase):
             )
             self.assertEqual(verify.returncode, 0, verify.stderr)
 
-    def test_snk_matches_the_source_rsa_key(self):
-        expected = _modulus("x509", "-in", _rlocation(_ARGS.source_certificate), "-noout", "-modulus")
-        size = (expected.bit_length() + 7) // 8
-
-        pair = _read(_ARGS.snk)
-        self.assertEqual(pair[:12], bytes([0x07, 0x02, 0, 0, 0, 0x24, 0, 0]) + b"RSA2")
-        self.assertEqual(int.from_bytes(pair[12:16], "little"), size * 8)
-        n = int.from_bytes(pair[20:20 + size], "little")
-        half = size // 2
-        p = int.from_bytes(pair[20 + size:20 + size + half], "little")
-        q = int.from_bytes(pair[20 + size + half:20 + size + 2 * half], "little")
-        d = int.from_bytes(pair[-size:], "little")
-        self.assertEqual(n, expected)
-        self.assertEqual(p * q, n)
-        self.assertEqual(pow(pow(7, 65537, n), d, n), 7)
-
-        public = _read(_ARGS.public_snk)
-        self.assertEqual(public[:8], bytes([0, 0x24, 0, 0, 4, 0x80, 0, 0]))
-        self.assertEqual(int.from_bytes(public[8:12], "little"), len(public) - 12)
-        self.assertEqual(public[20:24], b"RSA1")
-        self.assertEqual(int.from_bytes(public[-size:], "little"), expected)
-
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in (
-        "openssl", "pem", "p12", "keystore", "snk", "public-snk",
-        "source-certificate", "private-key", "public-key", "password", "cosign",
+        "openssl", "pem", "p12", "keystore",
+        "private-key", "public-key", "password", "cosign",
     ):
         parser.add_argument("--" + name, required=True)
     return parser.parse_known_args(argv)
