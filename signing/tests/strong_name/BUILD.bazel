@@ -76,22 +76,6 @@ csharp_binary(
     deps = [":friend_lib"],
 )
 
-# Each app prints what the runtime reports for it.
-[
-    genrule(
-        name = name + "_output",
-        outs = [name + "_output.txt"],
-        cmd = "$(execpath :{}) > $@".format(name),
-        tools = [":" + name],
-    )
-    for name in [
-        "strong_named_app",
-        "delay_signed_app",
-        "public_signed_app",
-        "friend_app",
-    ]
-]
-
 py_test(
     name = "strong_name_test",
     size = "small",
@@ -100,20 +84,20 @@ py_test(
         "strong_name_test.py",
     ],
     args = [
-        "--signed=$(rootpath :strong_named_app_output)",
-        "--delay-signed=$(rootpath :delay_signed_app_output)",
-        "--public-signed=$(rootpath :public_signed_app_output)",
-        "--friend=$(rootpath :friend_app_output)",
-        "--public-snk=$(rootpath :company_a_public_key)",
-        "--key-pair=$(rootpath :company_a_key_pair)",
+        "--signed=$(rlocationpath :strong_named_app)",
+        "--delay-signed=$(rlocationpath :delay_signed_app)",
+        "--public-signed=$(rlocationpath :public_signed_app)",
+        "--friend=$(rlocationpath :friend_app)",
+        "--public-snk=$(rlocationpath :company_a_public_key)",
+        "--key-pair=$(rlocationpath :company_a_key_pair)",
     ],
     data = [
         ":company_a_key_pair",
         ":company_a_public_key",
-        ":delay_signed_app_output",
-        ":friend_app_output",
-        ":public_signed_app_output",
-        ":strong_named_app_output",
+        ":delay_signed_app",
+        ":friend_app",
+        ":public_signed_app",
+        ":strong_named_app",
     ],
     deps = ["@rules_python//python/runfiles"],
 )
@@ -122,11 +106,10 @@ py_test(
 # Windows SDK (NETFX tools) on Windows, and Mono's sn elsewhere. Neither ships
 # with the .NET SDK, so both are taken from the host.
 _SN_TEST_ARGS = [
-    "--signed-assembly=$(rootpath :strong_named_app)",
-    "--delay-signed-assembly=$(rootpath :delay_signed_app)",
-    "--expected=$(rootpath :strong_named_app_output)",
-    "--key-pair=$(rootpath :company_a_key_pair)",
-    "--public-snk=$(rootpath :company_a_public_key)",
+    "--signed-assembly=$(rlocationpath :strong_named_app)",
+    "--delay-signed-assembly=$(rlocationpath :delay_signed_app)",
+    "--key-pair=$(rlocationpath :company_a_key_pair)",
+    "--public-snk=$(rlocationpath :company_a_public_key)",
 ]
 
 _SN_TEST_DATA = [
@@ -134,7 +117,6 @@ _SN_TEST_DATA = [
     ":company_a_public_key",
     ":delay_signed_app",
     ":strong_named_app",
-    ":strong_named_app_output",
 ]
 
 py_test(

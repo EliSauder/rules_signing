@@ -27,16 +27,32 @@ _RUNFILES = Runfiles.Create()
 _TOKEN = re.compile(r"public key token(?: is|:)\s*([0-9a-f]{16})", re.IGNORECASE)
 
 
-def _resolve(rootpath):
-    resolved = _RUNFILES.Rlocation("rules_signing/" + rootpath)
+def _resolve(rlocationpath):
+    resolved = _RUNFILES.Rlocation(rlocationpath)
     if not resolved:
-        raise AssertionError("no runfile for '{}'".format(rootpath))
+        raise AssertionError("no runfile for '{}'".format(rlocationpath))
     return resolved
 
 
-def _assembly(rootpath):
+def _assembly(rlocationpath):
     # A csharp_binary's executable is a launcher next to its .dll.
-    return _resolve(re.sub(r"\.(sh|bat)$", "", rootpath))
+    return _resolve(re.sub(r"\.(sh|bat)$", "", rlocationpath))
+
+
+def _runtime_token(rlocationpath):
+    """Runs a csharp_binary that prints the token the runtime reports for it."""
+    env = dict(os.environ)
+    env.update(_RUNFILES.EnvVars())
+    result = subprocess.run(
+        [_resolve(rlocationpath)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        env=env,
+    )
+    if result.returncode != 0:
+        raise AssertionError("{} failed:\n{}".format(rlocationpath, result.stdout))
+    return result.stdout.split()[0].lower()
 
 
 def _find_sn(flavor):
@@ -62,8 +78,7 @@ class SnTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.sn = _find_sn(_ARGS.sn)
-        with open(_resolve(_ARGS.expected), "r") as handle:
-            cls.expected_token = handle.read().split()[0].lower()
+        cls.expected_token = _runtime_token(_ARGS.signed_assembly)
 
     def run_sn(self, *args):
         return subprocess.run(
@@ -108,7 +123,7 @@ class SnTest(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sn", choices=("microsoft", "mono"), required=True)
-    for name in ("signed-assembly", "delay-signed-assembly", "expected", "key-pair", "public-snk"):
+    for name in ("signed-assembly", "delay-signed-assembly", "key-pair", "public-snk"):
         parser.add_argument("--" + name, required=True)
     parsed, remaining = parser.parse_known_args(sys.argv[1:])
     _ARGS.__dict__.update(vars(parsed))

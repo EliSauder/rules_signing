@@ -21,6 +21,8 @@ when both name the same key.
 """
 
 import argparse
+import os
+import subprocess
 import sys
 import unittest
 
@@ -30,16 +32,31 @@ _ARGS = argparse.Namespace()
 _RUNFILES = Runfiles.Create()
 
 
-def _resolve(rootpath):
-    resolved = _RUNFILES.Rlocation("rules_signing/" + rootpath)
+def _resolve(rlocationpath):
+    resolved = _RUNFILES.Rlocation(rlocationpath)
     if not resolved:
-        raise AssertionError("no runfile for '{}'".format(rootpath))
+        raise AssertionError("no runfile for '{}'".format(rlocationpath))
     return resolved
 
 
-def _read_identity(rootpath):
-    with open(_resolve(rootpath), "r") as handle:
-        token, public_key = handle.read().split()
+def _run(rlocationpath):
+    """Runs a csharp_binary and returns what it printed."""
+    env = dict(os.environ)
+    env.update(_RUNFILES.EnvVars())
+    result = subprocess.run(
+        [_resolve(rlocationpath)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        env=env,
+    )
+    if result.returncode != 0:
+        raise AssertionError("{} failed:\n{}".format(rlocationpath, result.stdout))
+    return result.stdout
+
+
+def _read_identity(rlocationpath):
+    token, public_key = _run(rlocationpath).split()
     return token, public_key
 
 
@@ -77,8 +94,7 @@ class StrongNameTrustTest(unittest.TestCase):
         self.assertEqual(header[4:8], (0x2400).to_bytes(4, "little"))
 
     def test_friend_assembly_identity_is_accepted(self):
-        with open(_resolve(_ARGS.friend), "r") as handle:
-            self.assertEqual(handle.read().strip(), "friend access granted")
+        self.assertEqual(_run(_ARGS.friend).strip(), "friend access granted")
 
     def test_delay_signed_build_is_trusted_as_company_a(self):
         self.assertTrusted(_ARGS.delay_signed)
