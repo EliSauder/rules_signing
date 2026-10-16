@@ -1,4 +1,14 @@
-load("//signing:defs.bzl", "certificate", "self_signed_certificate", "sign")
+load(
+    "//signing:defs.bzl",
+    "certificate",
+    "certificate_keypair",
+    "certificate_keystore",
+    "certificate_p12",
+    "certificate_pem",
+    "certificate_snk",
+    "self_signed_certificate",
+    "sign",
+)
 load("//signing/tests:tree.bzl", "make_tree")
 load("//signing/tests:cross.bzl", "platform_binary")
 load(
@@ -1307,4 +1317,91 @@ pick_file(
     name = "signed_scala_greeting_jar",
     src = ":signed_scala_greeting",
     suffix = "scala_greeting.jar",
+)
+
+# ---------------------------------------------------------------------------
+# Format conversions of a `certificate`. The RSA PEM source feeds every format;
+# the p12 source covers decrypting a protected bundle.
+# ---------------------------------------------------------------------------
+
+certificate_pem(
+    name = "converted_pem",
+    certificate = ":self_signed_p12_cert",
+)
+
+certificate_p12(
+    name = "converted_p12",
+    certificate = ":self_signed_pem_cert",
+    password = "rules-signing-converted",
+    alias = "converted",
+)
+
+certificate_keystore(
+    name = "converted_keystore",
+    certificate = ":self_signed_pem_cert",
+    password = "rules-signing-converted",
+    alias = "converted",
+)
+
+certificate_snk(
+    name = "converted_snk",
+    certificate = ":self_signed_pem_cert",
+)
+
+certificate_keypair(
+    name = "converted_keypair",
+    certificate = ":self_signed_p12_cert",
+    password = "rules-signing-converted",
+)
+
+[
+    filegroup(
+        name = "{}_{}".format(target, group),
+        srcs = [":" + target],
+        output_group = group,
+    )
+    for target, group in [
+        ("converted_pem", "certificate"),
+        ("converted_snk", "key_pair"),
+        ("converted_snk", "public_key"),
+        ("converted_keypair", "private_key"),
+        ("converted_keypair", "public_key"),
+    ]
+]
+
+py_test(
+    name = "certificate_formats_test",
+    size = "small",
+    srcs = [
+        "//signing:__init__.py",
+        "__init__.py",
+        "certificate_formats_test.py",
+    ],
+    args = [
+        "--openssl=$(rootpath @signing_openssl//:openssl_file)",
+        "--pem=$(rootpath :converted_pem_certificate)",
+        "--p12=$(rootpath :converted_p12)",
+        "--keystore=$(rootpath :converted_keystore)",
+        "--snk=$(rootpath :converted_snk_key_pair)",
+        "--public-snk=$(rootpath :converted_snk_public_key)",
+        "--source-certificate=$(rootpath :self_signed_pem_cert_certificate_only)",
+        "--private-key=$(rootpath :converted_keypair_private_key)",
+        "--public-key=$(rootpath :converted_keypair_public_key)",
+        "--password=rules-signing-converted",
+        "--cosign=$(rootpath @signing_cosign//:cosign_file)",
+    ],
+    data = [
+        ":converted_keypair_private_key",
+        ":converted_keypair_public_key",
+        ":converted_keystore",
+        ":converted_p12",
+        ":converted_pem_certificate",
+        ":converted_snk_key_pair",
+        ":converted_snk_public_key",
+        ":self_signed_pem_cert_certificate_only",
+        "@signing_cosign//:cosign_file",
+        "@signing_openssl//:openssl_file",
+        "@signing_openssl//:openssl_files",
+    ],
+    deps = ["@rules_python//python/runfiles"],
 )

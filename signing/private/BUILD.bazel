@@ -47,6 +47,7 @@ bzl_library(
     name = "defs_bzl",
     srcs = [
         "certificate.bzl",
+        "certificate_formats.bzl",
         "self_signed_certificate.bzl",
         "sign.bzl",
     ],
