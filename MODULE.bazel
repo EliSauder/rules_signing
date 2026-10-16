@@ -92,7 +92,7 @@ register_toolchains(
 )
 
 # scala_binary is the same JVM-launcher shape again, under a different name.
-bazel_dep(name = "rules_scala", version = "7.3.0", dev_dependency = True)
+bazel_dep(name = "rules_scala", version = "7.4.0", dev_dependency = True)
 
 # rules_scala's transitive `protobuf` dep otherwise builds `protoc` from
 # source using whichever C++ toolchain resolves for the exec platform, which
