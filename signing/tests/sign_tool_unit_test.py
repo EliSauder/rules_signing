@@ -1,3 +1,4 @@
+import argparse
 import base64
 import json
 import os
@@ -112,6 +113,13 @@ def _binary_fixtures() -> "tuple[str, str]":
 
 class SignToolUnitTest(unittest.TestCase):
     def _args(self):
+        # The build converts the certificate for cosign ahead of time (see
+        # `signing_context`); stand in for that converted key.
+        fd, converted_key = tempfile.mkstemp(suffix=".key")
+        os.close(fd)
+        self.addCleanup(os.remove, converted_key)
+        pathlib.Path(converted_key).write_text(_COSIGN_PRIVATE_KEY, encoding="utf-8")
+
         class Args:
             osslsigncode_tool = "fake-osslsigncode"
             cosign_tool = "fake-cosign"
@@ -126,6 +134,8 @@ class SignToolUnitTest(unittest.TestCase):
             transparency_log = ""
             ca_file = ""
             openssl_tool = ""
+            cosign_key = converted_key
+            jarsigner_keystore = ""
             detached_signatures = "auto"
 
         return Args()
@@ -1187,6 +1197,7 @@ class SignToolUnitTest(unittest.TestCase):
                     cert_path=str(key),
                     password="",
                     tmpdir=tmp,
+                    cosign_key=str(key),
                     transparency_log="https://rekor.internal.example",
                 )
 
@@ -1364,32 +1375,43 @@ class SignToolUnitTest(unittest.TestCase):
             self.assertEqual(apple[pem_flags[0] + 1], str(cert))
             self.assertEqual(apple[pem_flags[1] + 1], str(ca))
 
-    def test_cosign_reuses_a_key_it_already_owns(self) -> None:
+    def _convert_args(self, cert: pathlib.Path, out: pathlib.Path, **overrides):
+        args = argparse.Namespace(
+            cert_file=str(cert),
+            out=str(out),
+            public_key_out="",
+            cert_out="",
+            cosign_tool="fake-cosign",
+            openssl_tool="",
+            convert_optional=False,
+        )
+        for k, v in overrides.items():
+            setattr(args, k, v)
+        return args
+
+    def test_cosign_conversion_keeps_a_key_it_already_owns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             key = root / "cosign.key"
             key.write_text(_COSIGN_PRIVATE_KEY, encoding="utf-8")
+            out = root / "out.key"
 
             recorded: list[list[str]] = []
             with mock.patch.object(
                 sign_tool, "run_cmd", side_effect=lambda cmd, **kw: recorded.append(cmd)
             ):
-                resolved = sign_tool.resolve_cosign_key(
-                    tool="fake-cosign",
-                    cert_path=str(key),
-                    password="",
-                    tmpdir=tmp,
-                )
+                sign_tool.convert_to_cosign(self._convert_args(key, out), "", "")
 
-            self.assertEqual(resolved, str(key))
+            self.assertEqual(out.read_text(encoding="utf-8"), _COSIGN_PRIVATE_KEY)
             self.assertEqual(recorded, [], "an existing cosign key must not be re-imported")
 
-    def test_cosign_imports_a_pem_certificate(self) -> None:
-        # One PEM can back all three signers, but only after cosign rewraps it
-        # into its own key envelope.
+    def test_cosign_conversion_imports_a_pem_certificate_without_openssl(self) -> None:
+        # One PEM can back every signer, but cosign only signs once it has
+        # rewrapped it into its own key envelope.
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             cert = self._cert(root, "cert.pem", True)
+            out = root / "out.key"
 
             recorded: list[list[str]] = []
 
@@ -1398,22 +1420,17 @@ class SignToolUnitTest(unittest.TestCase):
                 _fake_cosign(cmd)
 
             with mock.patch.object(sign_tool, "run_cmd", side_effect=fake):
-                resolved = sign_tool.resolve_cosign_key(
-                    tool="fake-cosign",
-                    cert_path=str(cert),
-                    password="pw",
-                    tmpdir=tmp,
-                )
+                sign_tool.convert_to_cosign(self._convert_args(cert, out), "secret", "secret")
 
             self.assertEqual(recorded[0][1], "import-key-pair")
             self.assertEqual(recorded[0][recorded[0].index("--key") + 1], str(cert))
-            self.assertTrue(pathlib.Path(resolved).is_file())
-            self.assertTrue(sign_tool.is_cosign_private_key(resolved))
+            self.assertTrue(sign_tool.is_cosign_private_key(str(out)))
 
-    def test_cosign_converts_a_pkcs12_certificate_when_openssl_is_available(self) -> None:
+    def test_cosign_conversion_converts_a_pkcs12_certificate_with_openssl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             cert = self._cert(root, "cert.p12", False)
+            out = root / "out.key"
 
             recorded: list[list[str]] = []
 
@@ -1426,47 +1443,78 @@ class SignToolUnitTest(unittest.TestCase):
                     return
                 _fake_cosign(cmd)
 
-            with mock.patch.object(sign_tool, "run_cmd", side_effect=fake):
-                resolved = sign_tool.resolve_cosign_key(
-                    tool="fake-cosign",
-                    cert_path=str(cert),
-                    password="pw",
-                    tmpdir=tmp,
-                    openssl="fake-openssl",
+            def capture(cmd: list[str], **_kw: object) -> str:
+                recorded.append(cmd)
+                return _PEM_CERTIFICATE
+
+            with mock.patch.object(sign_tool, "run_cmd", side_effect=fake), \
+                 mock.patch.object(sign_tool, "run_cmd_capture", side_effect=capture):
+                sign_tool.convert_to_cosign(
+                    self._convert_args(cert, out, openssl_tool="fake-openssl"),
+                    "secret",
+                    "secret",
                 )
 
-            convert, importer = recorded
+            convert, decrypt, importer = recorded
             self.assertEqual(convert[1], "pkcs12")
             self.assertEqual(convert[convert.index("-in") + 1], str(cert))
-            self.assertIn("-nodes", convert)
-            # cosign reads the first PEM block, so certificates must be excluded.
-            self.assertIn("-nocerts", convert)
             self.assertEqual(convert[convert.index("-passin") + 1], "env:RULES_SIGNING_P12_PASSWORD")
+            self.assertEqual(decrypt[1], "pkey")
+            self.assertEqual(decrypt[decrypt.index("-in") + 1], convert[convert.index("-out") + 1])
 
-            # The imported key must come from the converted PEM, not the p12.
+            # The imported key must come from the decrypted PEM, not the p12.
             self.assertEqual(importer[1], "import-key-pair")
-            self.assertEqual(
-                importer[importer.index("--key") + 1],
-                convert[convert.index("-out") + 1],
-            )
-            self.assertTrue(sign_tool.is_cosign_private_key(resolved))
+            self.assertNotEqual(importer[importer.index("--key") + 1], str(cert))
+            self.assertTrue(sign_tool.is_cosign_private_key(str(out)))
 
-    def test_cosign_pkcs12_without_openssl_explains_how_to_proceed(self) -> None:
+    def test_cosign_conversion_of_pkcs12_without_openssl_explains_how_to_proceed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             cert = self._cert(root, "cert.p12", False)
 
-            with self.assertRaises(ValueError) as ctx:
-                sign_tool.resolve_cosign_key(
-                    tool="fake-cosign",
-                    cert_path=str(cert),
-                    password="pw",
-                    tmpdir=tmp,
+            with self.assertRaises(SystemExit) as ctx:
+                sign_tool.convert_to_cosign(
+                    self._convert_args(cert, root / "out.key"), "secret", "secret"
                 )
 
             message = str(ctx.exception)
             self.assertIn("PKCS#12", message)
             self.assertIn("openssl toolchain", message)
+
+    def test_optional_cosign_conversion_defers_the_missing_openssl_error(self) -> None:
+        # Signing converts whenever cosign might be needed; the error belongs
+        # to the file that actually needs the key, not to the conversion.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cert = self._cert(root, "cert.p12", False)
+            out = root / "out.key"
+
+            sign_tool.convert_to_cosign(
+                self._convert_args(cert, out, convert_optional=True), "secret", "secret"
+            )
+            self.assertEqual(out.read_bytes(), b"")
+
+            with self.assertRaises(ValueError) as ctx:
+                sign_tool.converted_cosign_key(str(out), str(cert))
+            self.assertIn("openssl toolchain", str(ctx.exception))
+
+    def test_jarsigner_without_a_keystore_explains_how_to_proceed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            cert = self._cert(root, "cert.pem", True)
+            jar = root / "app.jar"
+            jar.write_bytes(b"jar")
+
+            with self.assertRaises(ValueError) as ctx:
+                sign_tool.sign_with_jarsigner(
+                    tool="fake-jarsigner",
+                    infile=str(jar),
+                    outfile=str(root / "out.jar"),
+                    timestamp_url="",
+                    cert_path=str(cert),
+                    password="",
+                )
+            self.assertIn("openssl toolchain", str(ctx.exception))
 
 
     # ------------------------------------------------------------------

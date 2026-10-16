@@ -336,6 +336,24 @@ def is_cosign_private_key(path: str) -> bool:
     return b"SIGSTORE PRIVATE KEY" in head
 
 
+COSIGN_NEEDS_OPENSSL = (
+    "sign_tool: cosign requires PEM signing material but the "
+    "certificate is PKCS#12 ({}). Either supply a PEM certificate "
+    "(private key and certificate in one file) via certificate_file, "
+    "or register the optional openssl toolchain so it can be "
+    "converted during the build. See the 'Signing with a single "
+    "certificate' section of the rules_signing README."
+)
+
+JARSIGNER_NEEDS_OPENSSL = (
+    "sign_tool: jarsigner signs through a PKCS#12 keystore built from "
+    "this certificate ({}), and building one needs openssl. Register the "
+    "optional openssl toolchain so the keystore can be built during the "
+    "build. See the 'Signing with a single certificate' section of the "
+    "rules_signing README."
+)
+
+
 def pkcs12_to_pem(
     cert_path: str,
     password: str,
@@ -363,26 +381,8 @@ def pkcs12_to_pem(
     """
 
     if not openssl:
-        if include_certs:
-            raise ValueError(
-                "sign_tool: jarsigner signs through a PKCS#12 keystore " +
-                "built from this certificate, and building one from PKCS#12 " +
-                "material ({}) needs openssl. Either supply a PEM ".format(cert_path) +
-                "certificate (private key and certificate in one file) via " +
-                "certificate_file, or register the optional openssl " +
-                "toolchain so the keystore can be built during the build. " +
-                "See the 'Signing with a single certificate' section of " +
-                "the rules_signing README."
-            )
-        raise ValueError(
-            "sign_tool: cosign requires PEM signing material but the "
-            "certificate is PKCS#12 ({}). Either supply a PEM certificate "
-            "(private key and certificate in one file) via certificate_file, "
-            "or register the optional openssl toolchain so it can be "
-            "converted during the build. See the 'Signing with a single "
-            "certificate' section of the rules_signing README."
-            .format(cert_path)
-        )
+        message = JARSIGNER_NEEDS_OPENSSL if include_certs else COSIGN_NEEDS_OPENSSL
+        raise ValueError(message.format(cert_path))
 
     name = "cert-and-key-from-p12.pem" if include_certs else "cert-from-p12.pem"
     out = pathlib.Path(tmpdir) / name
@@ -406,41 +406,24 @@ def pkcs12_to_pem(
     return str(out)
 
 
-def resolve_cosign_key(
-    *, tool: str, cert_path: str, password: str, tmpdir: str, openssl: str = ""
-) -> str:
-    """Returns a cosign-usable signing key for arbitrary certificate material.
+def converted_cosign_key(cosign_key: str, cert_path: str) -> str:
+    """Returns the cosign key the build converted `cert_path` into.
 
-    cosign is the odd one out: osslsigncode and rcodesign both consume ordinary
-    certificate/key files, while cosign insists on its own key envelope. Left
-    alone that would force a separate credential just for cosign, so any
-    ordinary key is imported into cosign's format here. `import-key-pair` only
-    rewraps the key it is given, so the imported key is the same key, which is
-    what lets one certificate back all three signers.
+    The conversion is its own build action, the same one `certificate_keypair`
+    runs. That action leaves the key empty when PKCS#12 material could not be
+    converted for lack of openssl, so the error is only raised here, once a
+    file actually needs the key.
     """
 
-    if is_cosign_private_key(cert_path):
-        return cert_path
-
-    if not is_pem_certificate(cert_path):
-        cert_path = pkcs12_to_pem(cert_path, password, tmpdir, openssl)
-
-    prefix = pathlib.Path(tmpdir) / "cosign-imported"
-    imported = prefix.with_suffix(".key")
-    if not imported.is_file():
-        run_cmd(
-            [
-                tool,
-                "import-key-pair",
-                "--key",
-                cert_path,
-                "--output-key-prefix",
-                str(prefix),
-                "--yes",
-            ],
-            env=cosign_env(password),
+    if not cosign_key:
+        raise ValueError(
+            "sign_tool: no cosign key was converted from '{}' for this "
+            "action; the rule calling signing_context did not expect cosign "
+            "to be needed".format(cert_path)
         )
-    return str(imported)
+    if os.path.getsize(cosign_key) == 0:
+        raise ValueError(COSIGN_NEEDS_OPENSSL.format(cert_path))
+    return cosign_key
 
 
 def cosign_env(password: str) -> Dict[str, str]:
@@ -709,7 +692,7 @@ def sign_blob_with_cosign(
     cert_path: Optional[str],
     password: str,
     tmpdir: str = "",
-    openssl: str = "",
+    cosign_key: str = "",
     transparency_log: str = "",
 ) -> None:
     passthrough(infile, outfile)
@@ -720,13 +703,7 @@ def sign_blob_with_cosign(
 
     env = os.environ.copy()
     env["COSIGN_PASSWORD"] = password if password else ""
-    cert_path = resolve_cosign_key(
-        tool=tool,
-        cert_path=cert_path,
-        password=password,
-        tmpdir=tmpdir,
-        openssl=openssl,
-    )
+    cert_path = converted_cosign_key(cosign_key, cert_path)
     bundle_path = outfile + ".bundle.json"
     signature = run_cmd_capture(
         cosign_sign_blob_cmd(
@@ -799,7 +776,7 @@ def sign_oci_layout_with_cosign(
     cert_path: Optional[str],
     password: str,
     tmpdir: str = "",
-    openssl: str = "",
+    cosign_key: str = "",
     transparency_log: str = "",
 ) -> None:
     passthrough(infile, outfile)
@@ -816,13 +793,7 @@ def sign_oci_layout_with_cosign(
 
     env = os.environ.copy()
     env["COSIGN_PASSWORD"] = password if password else ""
-    cert_path = resolve_cosign_key(
-        tool=tool,
-        cert_path=cert_path,
-        password=password,
-        tmpdir=tmpdir,
-        openssl=openssl,
-    )
+    cert_path = converted_cosign_key(cosign_key, cert_path)
 
     run_cmd(
         cosign_sign_blob_cmd(
@@ -981,70 +952,6 @@ def sign_with_codesign(
 _JARSIGNER_ALIAS = "rules-signing"
 
 
-def jarsigner_keystore(
-    cert_path: str,
-    password: str,
-    tmpdir: str,
-    openssl: str = "",
-    ca_path: str = "",
-) -> str:
-    """Builds the PKCS#12 keystore `sign_with_jarsigner` signs through.
-
-    jarsigner is the odd one out among the signers here in the same way
-    cosign is: it never reads a bare certificate/key pair, only a keystore.
-    Whatever material rules_signing was given -- a unified PEM or an existing
-    PKCS#12 -- is (re-)packaged into a fresh keystore under `_JARSIGNER_ALIAS`
-    here, cached for the lifetime of `tmpdir` so signing many jars in one
-    invocation builds it only once. `ca_path`, if given, is folded into the
-    same keystore as extra chain certificates, since a PKCS#12's chain is
-    what jarsigner embeds in the signature block -- there is no separate
-    "extra certificates" flag the way osslsigncode has `-ac`.
-    """
-
-    keystore = pathlib.Path(tmpdir) / "jarsigner-keystore.p12"
-    if keystore.is_file():
-        return str(keystore)
-
-    pem_path = cert_path
-    if not is_pem_certificate(cert_path):
-        pem_path = pkcs12_to_pem(cert_path, password, tmpdir, openssl, include_certs=True)
-
-    if not openssl:
-        raise ValueError(
-            "sign_tool: jarsigner signs through a PKCS#12 keystore built "
-            "here with openssl. Register the optional openssl toolchain so "
-            "it can be built during the build. See the 'Signing with a "
-            "single certificate' section of the rules_signing README."
-        )
-
-    env = dict(os.environ)
-    env["RULES_SIGNING_JARSIGNER_PASSWORD"] = password
-    cmd = [
-        openssl,
-        "pkcs12",
-        "-export",
-        "-in",
-        pem_path,
-        "-inkey",
-        pem_path,
-        "-name",
-        _JARSIGNER_ALIAS,
-        "-passout",
-        "env:RULES_SIGNING_JARSIGNER_PASSWORD",
-        "-out",
-        str(keystore),
-    ]
-    if ca_path:
-        # Appends the issuing chain as additional certificates in the
-        # keystore entry, so a verifier can build a path to the root without
-        # having to source the intermediates itself -- the same guarantee
-        # `-ac`/rcodesign's extra-certificates option gives the other two
-        # native signers.
-        cmd.extend(["-certfile", ca_path])
-    run_cmd(cmd, env=env)
-    return str(keystore)
-
-
 def sign_with_jarsigner(
     *,
     tool: str,
@@ -1053,11 +960,15 @@ def sign_with_jarsigner(
     timestamp_url: str,
     cert_path: Optional[str],
     password: str,
-    tmpdir: str,
-    openssl: str = "",
-    ca_path: str = "",
+    keystore: str = "",
 ) -> None:
-    """Sign a `.jar` in place with jarsigner, embedding the signature in it."""
+    """Sign a `.jar` with jarsigner, embedding the signature in it.
+
+    jarsigner only reads a keystore, so the build converts the certificate
+    into one beforehand (the same conversion `certificate_keystore` runs,
+    which also folds in the issuing chain). It is skipped when openssl is not
+    registered, which is only an error once a jar actually has to be signed.
+    """
 
     if not tool:
         raise ValueError(
@@ -1070,8 +981,15 @@ def sign_with_jarsigner(
         passthrough(infile, outfile)
         return
 
+    if not keystore:
+        raise ValueError(JARSIGNER_NEEDS_OPENSSL.format(cert_path))
+    if os.path.getsize(keystore) == 0:
+        raise ValueError(
+            "sign_tool: jarsigner cannot sign with a cosign key ({}); it "
+            "needs a certificate (unified PEM or PKCS#12)".format(cert_path)
+        )
+
     ensure_parent(outfile)
-    keystore = jarsigner_keystore(cert_path, password, tmpdir, openssl, ca_path)
     cmd = [
         tool,
         "-keystore",
@@ -1132,11 +1050,9 @@ def sign_file(
             infile=infile,
             outfile=outfile,
             timestamp_url=args.timestamp_url,
-            ca_path=args.ca_file,
             cert_path=cert_path,
             password=password,
-            tmpdir=tmpdir,
-            openssl=args.openssl_tool,
+            keystore=args.jarsigner_keystore,
         )
     elif selected == "cosign":
         sign_blob_with_cosign(
@@ -1144,7 +1060,7 @@ def sign_file(
             infile=infile,
             outfile=outfile,
             tmpdir=tmpdir,
-            openssl=args.openssl_tool,
+            cosign_key=args.cosign_key,
             transparency_log=args.transparency_log,
             cert_path=cert_path,
             password=password,
@@ -1176,7 +1092,7 @@ def sign_directory(
             infile=indir,
             outfile=outdir,
             tmpdir=tmpdir,
-            openssl=args.openssl_tool,
+            cosign_key=args.cosign_key,
             transparency_log=args.transparency_log,
             cert_path=cert_path,
             password=password,
@@ -1394,7 +1310,7 @@ def apply_signature_plan(
         infile=source,
         outfile=outfile,
         tmpdir=tmpdir,
-        openssl=args.openssl_tool,
+        cosign_key=args.cosign_key,
         transparency_log=args.transparency_log,
         cert_path=cert_path,
         password=password,
@@ -1710,22 +1626,120 @@ def gen_self_signed_mode(args: argparse.Namespace) -> None:
             pathlib.Path(args.public_key_out).write_text(pubkey, encoding="utf-8")
 
 
+def write_empty_outputs(args: argparse.Namespace) -> None:
+    for out in (args.out, args.public_key_out, args.cert_out):
+        if out:
+            ensure_parent(out)
+            pathlib.Path(out).write_bytes(b"")
+
+
+def convert_to_cosign(args: argparse.Namespace, password: str, out_password: str) -> None:
+    """Converts the certificate into cosign's own key envelope.
+
+    Unlike the other formats this does not always need openssl: a cosign key
+    is used as is, and cosign imports a PEM key itself. Only PKCS#12 has to go
+    through openssl first. `import-key-pair` rewraps the key it is given, so
+    the result is the same key, which is what lets one certificate back
+    cosign and the other signers alike.
+    """
+
+    if not args.cosign_tool:
+        raise SystemExit("sign_tool: --convert-format cosign needs --cosign-tool")
+    openssl = args.openssl_tool
+    source = args.cert_file
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ensure_parent(args.out)
+        if is_cosign_private_key(source):
+            if out_password != password:
+                raise SystemExit(
+                    "sign_tool: the certificate is already a cosign key; it "
+                    "cannot be re-encrypted under a different password"
+                )
+            shutil.copyfile(source, args.out)
+            if args.public_key_out:
+                ensure_parent(args.public_key_out)
+                pathlib.Path(args.public_key_out).write_text(
+                    run_cmd_capture(
+                        [args.cosign_tool, "public-key", "--key", source],
+                        env=cosign_env(password),
+                    ),
+                    encoding="utf-8",
+                )
+        else:
+            if not is_pem_certificate(source):
+                if not openssl:
+                    if args.convert_optional:
+                        write_empty_outputs(args)
+                        return
+                    raise SystemExit(COSIGN_NEEDS_OPENSSL.format(source))
+                source = pkcs12_to_pem(source, password, tmpdir, openssl, include_certs=True)
+
+            key = source
+            if openssl:
+                # Decrypt the key first, so cosign encrypts it under the
+                # output password rather than the input one.
+                key_env = dict(os.environ)
+                key_env["RULES_SIGNING_KEY_PASSWORD"] = password
+                plain_key = pathlib.Path(tmpdir) / "plain-key.pem"
+                plain_key.write_text(
+                    run_cmd_capture(
+                        [openssl, "pkey", "-in", source,
+                         "-passin", "env:RULES_SIGNING_KEY_PASSWORD"],
+                        env=key_env,
+                    ),
+                    encoding="utf-8",
+                )
+                key = str(plain_key)
+            elif out_password != password:
+                raise SystemExit(
+                    "sign_tool: re-encrypting a cosign key under a different "
+                    "password needs the openssl toolchain"
+                )
+
+            prefix = pathlib.Path(tmpdir) / "cosign-keypair"
+            run_cmd(
+                [
+                    args.cosign_tool, "import-key-pair", "--key", key,
+                    "--output-key-prefix", str(prefix), "--yes",
+                ],
+                env=cosign_env(out_password),
+            )
+            pathlib.Path(args.out).write_bytes(prefix.with_suffix(".key").read_bytes())
+            if args.public_key_out:
+                ensure_parent(args.public_key_out)
+                pathlib.Path(args.public_key_out).write_bytes(
+                    prefix.with_suffix(".pub").read_bytes()
+                )
+
+        if args.cert_out:
+            ensure_parent(args.cert_out)
+            if not openssl or is_cosign_private_key(source):
+                raise SystemExit(
+                    "sign_tool: extracting the certificate needs the openssl "
+                    "toolchain and X.509 material"
+                )
+            cert = run_cmd_capture([openssl, "x509", "-in", source])
+            pathlib.Path(args.cert_out).write_text(cert, encoding="utf-8")
+
+
 def convert_mode(args: argparse.Namespace) -> None:
     """Handles `--mode convert`.
 
     Re-expresses an existing certificate (unified PEM or PKCS#12) in another
     format. Everything is normalized to a unified PEM first so each output
     format has a single source to read from.
+
+    With `--convert-optional` (used when signing converts material for the
+    signers that need a specific format), material that cannot be converted
+    leaves an empty output rather than failing, since nothing may end up
+    needing it.
     """
 
-    if not args.openssl_tool:
-        raise SystemExit(
-            "sign_tool: converting certificates requires the openssl "
-            "toolchain. Register it with:\n"
-            "    signing_tools.openssl(path = \"openssl\")\n"
-            "    register_toolchains(\"@signing_openssl//:openssl_toolchain\")"
-        )
     if not args.cert_file or os.path.getsize(args.cert_file) == 0:
+        if args.convert_optional:
+            write_empty_outputs(args)
+            return
         raise SystemExit("sign_tool: the certificate has no material to convert")
 
     stamps = load_stamp_files([args.info_file, args.version_file])
@@ -1747,6 +1761,29 @@ def convert_mode(args: argparse.Namespace) -> None:
 
     openssl = args.openssl_tool
     fmt = args.convert_format
+
+    if fmt == "cosign":
+        convert_to_cosign(args, password, out_password)
+        return
+
+    if is_cosign_private_key(args.cert_file):
+        # cosign's envelope holds no certificate, and its key encryption is
+        # cosign's own, so nothing else can be made from it.
+        if args.convert_optional:
+            write_empty_outputs(args)
+            return
+        raise SystemExit(
+            "sign_tool: the certificate is a cosign key, which can only be "
+            "converted to the cosign format"
+        )
+
+    if not openssl:
+        raise SystemExit(
+            "sign_tool: converting certificates requires the openssl "
+            "toolchain. Register it with:\n"
+            "    signing_tools.openssl(path = \"openssl\")\n"
+            "    register_toolchains(\"@signing_openssl//:openssl_toolchain\")"
+        )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         if is_pem_certificate(args.cert_file):
@@ -1804,25 +1841,6 @@ def convert_mode(args: argparse.Namespace) -> None:
             # wrong tree.
             env = {k: v for k, v in os.environ.items() if not k.startswith("RUNFILES_")}
             run_cmd(cmd, env=env)
-        elif fmt == "cosign":
-            if not args.cosign_tool:
-                raise SystemExit("sign_tool: --convert-format cosign needs --cosign-tool")
-            plain_key = pathlib.Path(tmpdir) / "plain-key.pem"
-            plain_key.write_text(private_key_pem(), encoding="utf-8")
-            prefix = pathlib.Path(tmpdir) / "cosign-keypair"
-            run_cmd(
-                [
-                    args.cosign_tool, "import-key-pair", "--key", str(plain_key),
-                    "--output-key-prefix", str(prefix), "--yes",
-                ],
-                env=cosign_env(out_password),
-            )
-            pathlib.Path(args.out).write_bytes(prefix.with_suffix(".key").read_bytes())
-            if args.public_key_out:
-                ensure_parent(args.public_key_out)
-                pathlib.Path(args.public_key_out).write_bytes(
-                    prefix.with_suffix(".pub").read_bytes()
-                )
         else:
             raise SystemExit("sign_tool: unknown --convert-format {!r}".format(fmt))
 
@@ -1971,6 +1989,10 @@ def main() -> None:
     parser.add_argument("--openssl-tool", default="")
     parser.add_argument("--codesign-tool", default="")
     parser.add_argument("--jarsigner-tool", default="")
+    # Signing material the build converted ahead of time for the signers that
+    # cannot read a plain certificate (see `signing_context`).
+    parser.add_argument("--cosign-key", default="")
+    parser.add_argument("--jarsigner-keystore", default="")
     parser.add_argument(
         "--timestamp-url",
         default="",
@@ -2009,6 +2031,9 @@ def main() -> None:
     # --mode convert
     parser.add_argument("--convert-format", choices=("pem", "p12", "keystore", "snk", "cosign"), default="pem")
     parser.add_argument("--alias", default="")
+    # Leave the output empty instead of failing when converting needs openssl
+    # and it is missing; signing raises the error once the output is used.
+    parser.add_argument("--convert-optional", action="store_true")
     parser.add_argument("--snk-tool", default="")
     parser.add_argument("--out-password-template", default="")
     parser.add_argument("--out-password-env", default="")

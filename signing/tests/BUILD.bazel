@@ -24,6 +24,7 @@ load(
 load("//signing/tests:manifest.bzl", "file_name_manifest")
 load("//signing/tests:jarsigner_toolchain_test.bzl", "jarsigner_toolchain_test_suite")
 load("//signing/tests:codesign_toolchain_test.bzl", "codesign_toolchain_test_suite")
+load("//signing/tests:convert_action_test.bzl", "detached_only_test", "jar_and_detached_test")
 load(
     "//signing/tests/testdata_certs:certs.bzl",
     "DEV_CERT_PASSWORD",
@@ -44,6 +45,19 @@ package(default_visibility = ["//visibility:public"])
 
 jarsigner_toolchain_test_suite(name = "jarsigner_toolchain_tests")
 codesign_toolchain_test_suite(name = "codesign_toolchain_tests")
+
+# Signing converts the certificate for cosign and jarsigner with the same
+# action the certificate_<format> rules run, and only for the
+# signers the sources need.
+jar_and_detached_test(
+    name = "convert_action_jar_and_detached_test",
+    target_under_test = ":signed_kotlin_greeting",
+)
+
+detached_only_test(
+    name = "convert_action_detached_only_test",
+    target_under_test = ":signed_real_blobs",
+)
 
 filegroup(
     name = "unsigned_files",
