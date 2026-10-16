@@ -520,11 +520,10 @@ issued as a plain code-signing certificate:
 - **RSA-2048 or EC P-256** — both are accepted by every signer.
 
 `cosign` uses bare-key trust and ignores X.509 entirely, so it cannot consume a
-certificate directly. `sign` bridges this by converting the certificate the way
-[`certificate_keypair`](#converting-a-certificate-to-another-format) does, with
-`cosign import-key-pair`, which yields a cosign keypair holding the *same* key
-the certificate carries. Signatures therefore verify against the certificate's
-public key:
+certificate directly. `sign` bridges this by running `cosign import-key-pair` on
+the certificate's private key during the action, which yields a cosign keypair
+holding the *same* key the certificate carries. Signatures therefore verify
+against the certificate's public key:
 
 ```bash
 cosign verify-blob --key cert-public-key.pem --bundle artifact.bundle.json artifact
@@ -532,19 +531,15 @@ cosign verify-blob --key cert-public-key.pem --bundle artifact.bundle.json artif
 
 `jarsigner` is the other signer that cannot consume a certificate directly —
 it only ever reads a keystore. `sign` bridges this the same way, building a
-PKCS#12 keystore from the certificate (including its `ca_file` chain) the way
-`certificate_keystore` does, under an alias `rules_signing` itself controls, so
-the original certificate's own alias (or a PEM's lack of one) never has to be
-recovered. Building that keystore needs the optional openssl toolchain (below)
-regardless of whether the certificate started as PEM or PKCS#12, since
-jarsigner has nothing to consume until the keystore exists.
+throwaway PKCS#12 keystore from the certificate during the action, under an
+alias `rules_signing` itself controls, so the original certificate's own
+alias (or a PEM's lack of one) never has to be recovered. Building that
+keystore needs the optional openssl toolchain (below) regardless of whether
+the certificate started as PEM or PKCS#12, since jarsigner has nothing to
+consume until the keystore exists.
 
-These conversions are separate build actions that run whenever a target might
-need cosign or jarsigner. Like the conversion rules, they are never cached,
-locally or remotely, since their outputs hold the private key.
-
-A PKCS#12 certificate is converted for cosign only if the optional openssl
-toolchain is registered:
+A PKCS#12 certificate is converted to PEM automatically, but only if the
+optional openssl toolchain is registered:
 
 ```starlark
 signing_tools = use_extension("@rules_signing//signing:extensions.bzl", "signing_tools")
@@ -559,10 +554,9 @@ repository rule adopts an `openssl` already present on the host — `path`
 accepts either a literal path or a bare program name resolved against `PATH`,
 which is why the same tag works on Linux, macOS and Windows. Use
 `signing_tools.openssl(label = ...)` instead to point at an `openssl` built by
-another module. Without the toolchain, the conversions are skipped, and only a
-file that is actually routed to `cosign` (with a PKCS#12 certificate) or to
-`jarsigner` fails, with an actionable message rather than a cryptic error from
-either.
+another module. Without the toolchain, a PKCS#12 certificate routed to
+`cosign` or `jarsigner` fails with an actionable message rather than a cryptic
+error from either.
 
 `osslsigncode` always passes `-nolegacy`, since the binary the toolchain
 fetches is statically linked with dynamic loading disabled and can never load

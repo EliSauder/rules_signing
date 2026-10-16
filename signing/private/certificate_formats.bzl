@@ -1,12 +1,17 @@
 """Rules that re-express a `certificate` in another file format."""
 
-load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS")
+load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS", "maybe_stamp")
 load("//signing:providers.bzl", "SigningCertificateInfo")
 load("//signing/private:action.bzl", "COSIGN_TOOLCHAIN", "OPENSSL_TOOLCHAIN")
-load("//signing/private:convert.bzl", "convert_certificate")
+
+def _needs_stamp(values):
+    for v in values:
+        if v and "{" in v:
+            return True
+    return False
 
 def _convert(ctx, fmt, outputs, out_password = False, snk_tool = None):
-    """Runs the shared conversion for a `certificate_<format>` rule.
+    """Runs the `convert` mode of sign_tool.
 
     Args:
         ctx: the rule context.
@@ -20,34 +25,101 @@ def _convert(ctx, fmt, outputs, out_password = False, snk_tool = None):
     if info.certificate == None:
         fail("rules_signing: `{}` has no certificate material to convert.".format(ctx.attr.certificate.label))
 
-    cosign_tool = None
+    openssl_tc = ctx.toolchains[OPENSSL_TOOLCHAIN]
+    openssl_file = openssl_tc.tool if openssl_tc != None and hasattr(openssl_tc, "tool") else None
+    if openssl_file == None:
+        fail(
+            "rules_signing: `{}` requires the openssl toolchain, which was not resolved.\n".format(ctx.label.name) +
+            "Register it with:\n" +
+            "    signing_tools = use_extension(\"@rules_signing//signing:extensions.bzl\", \"signing_tools\")\n" +
+            "    signing_tools.openssl(path = \"openssl\")\n" +
+            "    use_repo(signing_tools, \"signing_openssl\")\n" +
+            "    register_toolchains(\"@signing_openssl//:openssl_toolchain\")",
+        )
+
+    args = ctx.actions.args()
+
+    # A parameter file keeps passwords out of process listings.
+    args.set_param_file_format("multiline")
+    args.use_param_file("--args-file=%s", use_always = True)
+
+    args.add("--mode", "convert")
+    args.add("--openssl-tool", openssl_file.path)
+    args.add("--convert-format", fmt)
+    args.add("--cert-file", info.certificate)
+    args.add("--out", outputs["out"])
+    if outputs.get("cert_out"):
+        args.add("--cert-out", outputs["cert_out"])
+    if outputs.get("public_key_out"):
+        args.add("--public-key-out", outputs["public_key_out"])
+
+    inputs = [info.certificate]
     if fmt == "cosign":
-        cosign_tool = _toolchain_tool(ctx, COSIGN_TOOLCHAIN)
-        if cosign_tool == None:
+        cosign_tc = ctx.toolchains[COSIGN_TOOLCHAIN]
+        cosign_file = cosign_tc.tool if cosign_tc != None and hasattr(cosign_tc, "tool") else None
+        if cosign_file == None:
             fail(
                 "rules_signing: `{}` requires the cosign toolchain, ".format(ctx.label.name) +
                 "which was not resolved. Register it with `signing_tools.cosign()` and " +
                 "`register_toolchains(\"@signing_cosign//:cosign_toolchain\")`.",
             )
+        args.add("--cosign-tool", cosign_file.path)
+        inputs.append(cosign_file)
+    tools = [ctx.attr._converter[DefaultInfo].files_to_run]
+    if snk_tool:
+        args.add("--snk-tool", snk_tool[DefaultInfo].files_to_run.executable.path)
+        tools.append(snk_tool[DefaultInfo].files_to_run)
+    if info.ca_file:
+        args.add("--ca-file", info.ca_file)
+        inputs.append(info.ca_file)
+    if info.password:
+        args.add("--password-template", info.password)
+    if info.password_env:
+        args.add("--password-env", info.password_env)
 
-    convert_certificate(
-        ctx,
-        info = info,
-        fmt = fmt,
-        outputs = outputs,
-        converter = ctx.executable._converter,
-        openssl_tc = ctx.toolchains[OPENSSL_TOOLCHAIN],
-        cosign_tool = cosign_tool,
-        snk_tool = snk_tool,
-        alias = getattr(ctx.attr, "alias", ""),
-        out_password = ctx.attr.password if out_password else "",
-        out_password_env = ctx.attr.password_env if out_password else "",
-        stamp_defaults = ctx.attr.stamp_defaults,
+    templates = [info.password]
+    alias = getattr(ctx.attr, "alias", "")
+    if alias:
+        args.add("--alias", alias)
+    if out_password:
+        if ctx.attr.password:
+            args.add("--out-password-template", ctx.attr.password)
+        if ctx.attr.password_env:
+            args.add("--out-password-env", ctx.attr.password_env)
+        templates.append(ctx.attr.password)
+
+    stamp_defaults = dict(info.stamp_defaults)
+    stamp_defaults.update(ctx.attr.stamp_defaults)
+    for k, v in stamp_defaults.items():
+        args.add("--stamp-default", "{}={}".format(k, v))
+
+    if _needs_stamp(templates):
+        stamp = maybe_stamp(ctx)
+        if stamp:
+            args.add("--info-file", stamp.stable_status_file)
+            args.add("--version-file", stamp.volatile_status_file)
+            inputs.extend([stamp.stable_status_file, stamp.volatile_status_file])
+
+    if hasattr(openssl_tc, "data"):
+        inputs.extend(openssl_tc.data.to_list())
+    else:
+        inputs.append(openssl_file)
+
+    ctx.actions.run(
+        executable = ctx.executable._converter,
+        tools = tools,
+        arguments = [args],
+        inputs = depset(inputs),
+        outputs = [f for f in outputs.values() if f != None],
+        mnemonic = "ConvertCertificate",
+        progress_message = "Converting certificate to {} for {}".format(fmt, ctx.label),
+        # The output holds the private key, so it must never reach a cache.
+        execution_requirements = {
+            "no-cache": "1",
+            "no-remote-cache": "1",
+            "no-remote-cache-upload": "1",
+        },
     )
-
-def _toolchain_tool(ctx, toolchain_type):
-    tc = ctx.toolchains[toolchain_type]
-    return tc.tool if tc != None and hasattr(tc, "tool") else None
 
 def _certificate_pem_impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".pem")

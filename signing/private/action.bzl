@@ -24,7 +24,6 @@ load(
     "add_cert_args",
     "cert_info",
 )
-load("//signing/private:convert.bzl", "convert_certificate")
 load("//signing:providers.bzl", "SigningCertificateInfo")
 
 OSSLSIGNCODE_TOOLCHAIN = "//signing/toolchains:osslsigncode_toolchain_type"
@@ -434,7 +433,6 @@ def signing_context(
     inputs = []
     sign_tool = getattr(ctx.executable, "_" + attr_prefix + "sign_tool")
     tools = [sign_tool]
-    resolved_tools = {}
 
     for kind, toolchain_type in [
         ("osslsigncode", OSSLSIGNCODE_TOOLCHAIN),
@@ -469,7 +467,6 @@ def signing_context(
                 tool_mode,
             )
         if tool_file:
-            resolved_tools[kind] = tool_file
             args.add("--{}-tool".format(kind), tool_file.path if tool_file else "")
             inputs.append(tool_file)
             if kind == "codesign":
@@ -507,56 +504,26 @@ def signing_context(
         args.add("--jarsigner-tool", jarsigner_file.path)
         inputs.extend(jarsigner_support_files)
 
-    # cosign and jarsigner cannot read an ordinary certificate, so the
-    # certificate is converted for them by the same action the
-    # `certificate_keypair` and `certificate_keystore` rules run. Whether a
-    # signer is needed is only known for sure once the action runs (a
-    # directory's contents, a target the action produces itself), so the
-    # conversion runs whenever the signer might be. It is optional: material
-    # it cannot convert leaves an empty file, and sign_tool only reports that
-    # once a file really needs it.
-    base = name if name else ctx.label.name
-    material = cert.certificate if cert else None
-
-    def might_need(kind):
-        return not srcs or _needs_toolchain(srcs, tool_mode, kind, require, detached_mode, formats)
-
-    # openssl is optional: without it a PKCS#12 certificate cannot be
-    # converted for cosign, and no keystore can be built for jarsigner.
-    # sign_tool raises an actionable error once a file needs one. Not every
-    # rule declares `OPENSSL_TOOLCHAIN` (see `signing_toolchains`), so it is
-    # looked up only if declared.
+    # openssl is optional and only consulted when PKCS#12 material has to be
+    # converted to PEM for cosign, which cannot be known until the action runs.
+    # It is therefore never required at analysis time; sign_tool raises an
+    # actionable error if the conversion turns out to be necessary. Not every
+    # rule declares `OPENSSL_TOOLCHAIN` (see `signing_toolchains`), so this
+    # is skipped entirely rather than indexing `ctx.toolchains` with a type
+    # that was never declared.
     openssl_tc = ctx.toolchains[OPENSSL_TOOLCHAIN] if OPENSSL_TOOLCHAIN in ctx.toolchains else None
-    has_openssl = openssl_tc != None and getattr(openssl_tc, "tool", None) != None
+    openssl_file = openssl_tc.tool if openssl_tc != None and hasattr(openssl_tc, "tool") else None
+    if openssl_file:
+        args.add("--openssl-tool", openssl_file.path)
 
-    if material and "cosign" in resolved_tools and might_need("cosign"):
-        cosign_key = ctx.actions.declare_file(base + ".signing_cosign.key")
-        convert_certificate(
-            ctx,
-            info = cert,
-            fmt = "cosign",
-            outputs = {"out": cosign_key},
-            converter = sign_tool,
-            openssl_tc = openssl_tc if has_openssl else None,
-            cosign_tool = resolved_tools["cosign"],
-            optional = True,
-        )
-        args.add("--cosign-key", cosign_key)
-        inputs.append(cosign_key)
-
-    if material and jarsigner_file and has_openssl and might_need("jarsigner"):
-        keystore = ctx.actions.declare_file(base + ".signing_jarsigner.p12")
-        convert_certificate(
-            ctx,
-            info = cert,
-            fmt = "keystore",
-            outputs = {"out": keystore},
-            converter = sign_tool,
-            openssl_tc = openssl_tc,
-            optional = True,
-        )
-        args.add("--jarsigner-keystore", keystore)
-        inputs.append(keystore)
+        # `data` includes the tool itself plus any files it needs alongside
+        # it at runtime (e.g. Windows' libcrypto/libssl DLLs); adding them
+        # all as plain action inputs stages them in the sandbox next to
+        # openssl.exe, which is what its same-directory DLL search needs.
+        if hasattr(openssl_tc, "data"):
+            inputs.extend(openssl_tc.data.to_list())
+        else:
+            inputs.append(openssl_file)
 
     if attr("timestamp_url"):
         args.add("--timestamp-url", attr("timestamp_url"))
@@ -1120,11 +1087,11 @@ def signing_toolchains(
             signer.
         codesign: whether to declare `CODESIGN_TOOLCHAIN`, needed to sign
             Mach-O binaries and `.app`/`.pkg`/`.dmg` bundles.
-        openssl: whether to declare `OPENSSL_TOOLCHAIN`, used to convert the
-            certificate for the signers that need a specific format: a
-            PKCS#12 certificate into a cosign key, and any certificate into
-            the keystore jarsigner signs through. Without it, signing fails
-            only once such a conversion is actually needed.
+        openssl: whether to declare `OPENSSL_TOOLCHAIN`. Only consulted when
+            `cosign` has to convert PKCS#12 certificate material to PEM,
+            which cannot be known until the signing action runs, so `cosign`
+            still requires this whenever it might be used with such
+            material.
         jarsigner: whether to declare `JARSIGNER_TOOLCHAIN`. Set to `False`
             for a rule that signs no `.jar`s or other JVM binaries, so it
             never needs a Java runtime toolchain resolved and cannot be
