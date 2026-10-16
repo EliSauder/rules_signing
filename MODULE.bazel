@@ -27,11 +27,9 @@ bazel_dep(name = "bazel_skylib", version = "1.9.2", dev_dependency = True)
 # instead of reinventing it.
 bazel_dep(name = "bazel_lib", version = "3.7.2")
 
-# Builds the strong-name key converter used by `certificate_snk`'s tests.
-# Dev-only so consumers are never forced to take on rules_dotnet or its .NET
-# toolchains; consumers who use `certificate_snk` supply their own converter
-# binary (see the README).
-bazel_dep(name = "rules_dotnet", version = "0.22.2", dev_dependency = True)
+# Builds the strong-name key converter behind `certificate_snk` using
+# rules_dotnet's hermetic .NET toolchain.
+bazel_dep(name = "rules_dotnet", version = "0.22.2")
 
 # openssl is adopted from the host (see signing_tools.openssl() below)
 # rather than built from source: GitHub's ubuntu-latest, macos-latest and

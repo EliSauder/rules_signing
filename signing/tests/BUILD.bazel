@@ -1346,7 +1346,6 @@ certificate_keystore(
 certificate_snk(
     name = "converted_snk",
     certificate = ":self_signed_pem_cert",
-    snk_tool = "//signing/private/tools/snk:snk_tool",
 )
 
 certificate_keypair(

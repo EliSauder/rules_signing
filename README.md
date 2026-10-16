@@ -660,23 +660,11 @@ self_signed_certificate(name = "dev_cert")
 certificate_snk(
     name = "dev_snk",
     certificate = ":dev_cert",
-    snk_tool = ":snk_tool",
 )
 ```
 
-`certificate_snk` converts the key with a small .NET program, which rules_signing
-does not build for you so that consumers never need a .NET toolchain. Build it
-with your own `rules_dotnet` and pass it as `snk_tool`:
-
-```starlark
-load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary")
-
-csharp_binary(
-    name = "snk_tool",
-    srcs = ["@rules_signing//signing/private/tools:SnkTool.cs"],
-    target_frameworks = ["net9.0"],
-)
-```
+`certificate_snk` converts the key with a small .NET program that rules_signing
+builds with rules_dotnet's toolchain.
 
 The `.snk` can then be used as `<AssemblyOriginatorKeyFile>`, and the
 `.public.snk` for `<PublicSign>`/`<DelaySign>`.

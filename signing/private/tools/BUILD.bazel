@@ -3,11 +3,6 @@ load("@rules_python//python:pip.bzl", "compile_pip_requirements")
 
 package(default_visibility = ["//visibility:public"])
 
-# Source of the strong-name converter. It is built with rules_dotnet, which is
-# a dev-only dependency of this module so consumers are never forced to pull in
-# a .NET toolchain; consumers of `certificate_snk` build it themselves.
-exports_files(["SnkTool.cs"])
-
 compile_pip_requirements(
     name = "requirements",
     src = "requirements.txt",

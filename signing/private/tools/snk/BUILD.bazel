@@ -1,11 +1,10 @@
 load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary")
 
-# Used by this module's own tests. Not reachable by consumers: rules_dotnet is a
-# dev-only dependency, so they build the converter from
-# //signing/private/tools:SnkTool.cs with their own rules_dotnet.
+# Converts an RSA private key to .NET strong-name key files, for
+# `certificate_snk`.
 csharp_binary(
     name = "snk_tool",
-    srcs = ["//signing/private/tools:SnkTool.cs"],
+    srcs = ["SnkTool.cs"],
     target_frameworks = ["net9.0"],
-    visibility = ["//visibility:public"],
+    visibility = ["//signing:__subpackages__"],
 )
