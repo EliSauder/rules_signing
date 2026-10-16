@@ -1796,7 +1796,9 @@ def convert_mode(args: argparse.Namespace) -> None:
             plain_key = pathlib.Path(tmpdir) / "plain-key.pem"
             plain_key.write_text(private_key_pem(), encoding="utf-8")
             ensure_parent(args.public_key_out)
-            cmd = [args.snk_tool, str(plain_key), args.out, args.public_key_out]
+            # On Windows the converter is a .bat launcher, which cmd.exe can
+            # only run from a native (backslash) path.
+            cmd = [os.path.abspath(args.snk_tool), str(plain_key), args.out, args.public_key_out]
             # The converter is itself a runfiles-aware launcher; the variables
             # inherited from this tool's own runfiles would point it at the
             # wrong tree.

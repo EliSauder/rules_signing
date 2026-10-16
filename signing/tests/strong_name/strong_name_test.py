@@ -14,6 +14,10 @@ them.
 
 The public key file must also be exactly what `sn -p` writes: the same
 strong-name public key blob the compiler embeds in the signed release.
+
+Finally, `friend_app` (signed with the key pair) uses internals that
+`friend_lib` grants by the .public.snk key; the C# compiler only allows that
+when both name the same key.
 """
 
 import argparse
@@ -64,6 +68,10 @@ class StrongNameTrustTest(unittest.TestCase):
         _, release_public_key = _read_identity(_ARGS.signed)
         self.assertEqual(public_snk, release_public_key)
 
+    def test_friend_assembly_identity_is_accepted(self):
+        with open(_resolve(_ARGS.friend), "r") as handle:
+            self.assertEqual(handle.read().strip(), "friend access granted")
+
     def test_delay_signed_build_is_trusted_as_company_a(self):
         self.assertTrusted(_ARGS.delay_signed)
 
@@ -73,7 +81,7 @@ class StrongNameTrustTest(unittest.TestCase):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    for name in ("signed", "delay-signed", "public-signed", "public-snk"):
+    for name in ("signed", "delay-signed", "public-signed", "friend", "public-snk"):
         parser.add_argument("--" + name, required=True)
     parsed, remaining = parser.parse_known_args(sys.argv[1:])
     _ARGS.__dict__.update(vars(parsed))

@@ -142,6 +142,12 @@ jobs:
         run: bazel test //... --verbose_failures --sandbox_debug --test_output=errors --test_summary=detailed  --flaky_test_attempts=5
       - name: Verify signing with the local JDK
         run: bazel test //signing/tests:sign_verify_test --extra_toolchains=//signing/toolchains:local_jarsigner_toolchain --test_output=errors
+      - name: Verify strong names with Mono's sn
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mono-devel
+          bazel test //signing/tests/strong_name:mono_sn_test --test_env=PATH --test_output=errors
   test-with-cache:
     needs: build-and-test
     strategy:
