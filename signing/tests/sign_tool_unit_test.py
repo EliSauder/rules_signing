@@ -6,6 +6,7 @@ import shutil
 import stat
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 
 from python.runfiles import runfiles
@@ -284,6 +285,94 @@ class SignToolUnitTest(unittest.TestCase):
                     identity="",
                 )
             self.assertIn("no certificate resolved", str(raised.exception))
+
+    def test_an_unsigned_source_is_copied_through_untouched(self) -> None:
+        """Signer "none" is what `include`/`exclude` route a file to."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "Vendor.dll"
+            source.write_bytes(b"not a PE\n")
+
+            args = self._args()
+            args.detached_signatures = "always"
+
+            out = root / "out" / "Vendor.dll"
+            sign_tool.sign_one(
+                tool_mode="osslsigncode",
+                signer="none",
+                relpath="Vendor.dll",
+                infile=str(source),
+                outfile=str(out),
+                args=args,
+                cert_path=str(root / "cert.pem"),
+                password="",
+                identity="",
+            )
+
+            self.assertEqual(out.read_bytes(), b"not a PE\n")
+            self.assertFalse(pathlib.Path(str(out) + ".sig").exists())
+
+    def test_a_linker_signature_is_not_an_identity_signature(self) -> None:
+        """Every arm64 Mach-O is ad-hoc signed by its linker; it gets signed."""
+
+        macho, _ = _binary_fixtures()
+        self.assertFalse(
+            sign_tool.has_embedded_signature("codesign", macho, self._args())
+        )
+
+    def test_a_jar_is_signed_once(self) -> None:
+        """A `.SF` file under META-INF is what a jar signature consists of."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for name, entries, signed in (
+                ("plain.jar", ["META-INF/MANIFEST.MF"], False),
+                ("signed.jar", ["META-INF/MANIFEST.MF", "META-INF/VENDOR.SF"], True),
+                ("not_a_zip.jar", None, False),
+            ):
+                jar = root / name
+                if entries is None:
+                    jar.write_bytes(b"not a zip\n")
+                else:
+                    with zipfile.ZipFile(jar, "w") as z:
+                        for entry in entries:
+                            z.writestr(entry, "")
+                with self.subTest(jar=name):
+                    self.assertEqual(
+                        sign_tool.has_embedded_signature(
+                            "jarsigner", str(jar), self._args()
+                        ),
+                        signed,
+                    )
+
+    def test_an_already_signed_binary_is_delivered_unchanged(self) -> None:
+        """The existing signature is kept; the planned detached one is added."""
+
+        _, pe = _binary_fixtures()
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(sign_tool, "has_embedded_signature", return_value=True),
+            mock.patch.object(sign_tool, "sign_file") as sign_file,
+            mock.patch.object(sign_tool, "sign_blob_with_cosign") as cosign,
+        ):
+            root = pathlib.Path(tmp)
+            out = root / "out" / "hello_pe"
+            sign_tool.apply_signature_plan(
+                native="osslsigncode",
+                detached=True,
+                infile=pe,
+                outfile=str(out),
+                args=self._args(),
+                cert_path=str(root / "cert.pem"),
+                password="",
+                identity="",
+            )
+
+            sign_file.assert_not_called()
+            self.assertEqual(out.read_bytes(), pathlib.Path(pe).read_bytes())
+            self.assertEqual(cosign.call_args.kwargs["infile"], str(out))
 
     def test_detect_tool(self) -> None:
         self.assertEqual(sign_tool.detect_tool("bin/App.EXE"), "osslsigncode")

@@ -313,6 +313,75 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assertIn("readme.txt.sig", names)
         self.assertIn("readme.txt.bundle.json", names)
 
+    def test_excluded_files_pass_through_a_dotnet_binary(self) -> None:
+        """The compiled assembly is signed in place; excluded files are not.
+
+        `csharp_binary` links its packages' native libraries in beside the
+        assembly. `exclude` keeps those someone else's bytes, with no sidecars
+        either.
+        """
+
+        out = "signing/tests/dotnet/app/net9.0/"
+        self.assert_outputs(
+            "app",
+            {
+                out + "app.dll": (),
+                out + "app.xml": _SIDECARS,
+                out + "runtimes/linux-x64/native/libvendor.so": (),
+            },
+        )
+
+    def _publish_expectations(self, case: str, built: tuple, apphost=None) -> dict:
+        """`publish_binary`'s outputs, with the vendor's files excluded.
+
+        The runtime identifier and the apphost's name follow the platform, so
+        they are read back rather than pinned. `built` is the sidecars the
+        assemblies get; excluded files never get any. `apphost` overrides the
+        apphost's, which otherwise follow how its format is signed.
+        """
+
+        prefix = "signing/tests/dotnet/publish/publish/"
+        (rid,) = {rel[len(prefix):].split("/")[0] for rel in _outputs(case)}
+        out = prefix + rid + "/"
+        expected = {
+            out + "app.dll": built,
+            out + "lib.dll": built,
+            out + "app.deps.json": _SIDECARS,
+            out + "app.runtimeconfig.json": _SIDECARS,
+            out + "Vendor.dll": (),
+            out + "runtimes/linux-x64/native/libvendor.so": (),
+        }
+        name = "app.exe" if sys.platform == "win32" else "app"
+        if apphost is not None:
+            expected[out + name] = apphost
+        elif sys.platform in ("win32", "darwin"):
+            expected[out + name] = built
+        else:
+            # ELF has no embedded signature, so the apphost gets cosign's.
+            expected[out + name] = _SIDECARS
+        return expected
+
+    def test_publishing_signs_all_but_the_excluded(self) -> None:
+        """The project's assemblies and apphost are signed; excluded are not."""
+
+        self.assert_outputs("publish", self._publish_expectations("publish", ()))
+
+    def test_exclusion_wins_whatever_else_is_asked(self) -> None:
+        """Neither `always` nor an explicit `tool` reaches an excluded file."""
+
+        for case in ("publish_always", "publish_cosign"):
+            with self.subTest(case=case):
+                self.assert_outputs(case, self._publish_expectations(case, _SIDECARS))
+
+    def test_include_signs_only_what_it_names(self) -> None:
+        """Only the matched assemblies are signed; the rest pass through."""
+
+        expected = self._publish_expectations("publish_include", (), apphost=())
+        for path in list(expected):
+            if not path.endswith(("app.dll", "lib.dll")):
+                expected[path] = ()
+        self.assert_outputs("publish_include", expected)
+
 
 if __name__ == "__main__":
     unittest.main()

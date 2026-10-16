@@ -12,10 +12,12 @@ import pathlib
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
 import urllib.parse
+import zipfile
 import lief
 
 from typing import Dict, Iterable, Optional, Sequence, Tuple
@@ -76,6 +78,73 @@ def sniff_binary_format(path: str) -> str:
     if lief.is_pe(path):
         return "osslsigncode"
     return ""
+
+
+# A Mach-O code signature superblob slot holding the CMS signature. Ad-hoc
+# and linker signatures -- which every arm64 binary carries -- leave it
+# absent or as an empty 8-byte blob; only an identity's signature fills it.
+_MACHO_CMS_SLOT = 0x10000
+
+
+def _macho_has_identity_signature(path: str) -> bool:
+    fat = lief.MachO.parse(path)
+    for binary in fat:
+        if not binary.has_code_signature:
+            continue
+        blob = bytes(binary.code_signature.content)
+        (count,) = struct.unpack(">I", blob[8:12])
+        for i in range(count):
+            slot, offset = struct.unpack(">II", blob[12 + 8 * i : 20 + 8 * i])
+            if slot == _MACHO_CMS_SLOT:
+                (length,) = struct.unpack(">I", blob[offset + 4 : offset + 8])
+                if length > 8:
+                    return True
+    return False
+
+
+def has_embedded_signature(signer: str, path: str, args: argparse.Namespace) -> bool:
+    """Whether `path` already carries a signature `signer` would replace.
+
+    Files are signed once: whoever signed a file first -- a vendor, Microsoft,
+    another build step -- keeps their signature, and re-signing it would
+    replace their identity with ours. Only regular files are checked, which
+    includes each file walked out of a directory; what is signed as a unit
+    (bundles, flat packages, disk images) is signed as before.
+    """
+
+    if not os.path.isfile(path):
+        return False
+    if signer == "osslsigncode":
+        if not os.access(args.osslsigncode_tool or "", os.X_OK):
+            # Signing reports the missing toolchain itself.
+            return False
+        # Exits 0 only when a signature exists, for every format osslsigncode
+        # signs, which is the same set of formats it would be replacing.
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [
+                    args.osslsigncode_tool,
+                    "extract-signature",
+                    "-in",
+                    path,
+                    "-out",
+                    os.path.join(tmp, "signature"),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        return result.returncode == 0
+    if signer == "codesign":
+        return lief.is_macho(path) and _macho_has_identity_signature(path)
+    if signer == "jarsigner":
+        if not zipfile.is_zipfile(path):
+            return False
+        with zipfile.ZipFile(path) as jar:
+            return any(
+                n.upper().startswith("META-INF/") and n.upper().endswith(".SF")
+                for n in jar.namelist()
+            )
+    return False
 
 
 def detect_tool(path: str, infile: Optional[str] = None) -> str:
@@ -1257,6 +1326,11 @@ def sign_one(
     `--detached-signatures` combine.
     """
 
+    if signer == "none":
+        # Excluded by the caller: copied through, with no signature of any kind.
+        passthrough(infile, outfile)
+        return
+
     if pathlib.Path(infile).is_dir():
         selected = tool_mode
         if selected == "auto":
@@ -1365,10 +1439,18 @@ def apply_signature_plan(
     the file as it will be delivered, signed contents included. Verifying the
     detached signature against the artifact therefore succeeds, which it would
     not if the bytes were signed before the native signer rewrote them.
+
+    A file that already carries an embedded signature keeps it: see
+    `has_embedded_signature`. It is delivered unchanged, and still gets its
+    detached signature if one was planned, since that adds rather than
+    replaces.
     """
 
     source = infile
-    if native:
+    if native and has_embedded_signature(native, infile, args):
+        passthrough(infile, outfile)
+        source = outfile
+    elif native:
         sign_file(
             selected=native,
             infile=infile,

@@ -132,6 +132,8 @@ def _wants_detached(signer, detached_signatures):
     the same way for every source, which is the point of them -- the output
     shape stops depending on what the source is called.
     """
+    if signer == "none":
+        return False
     if detached_signatures == "always":
         return True
     if detached_signatures == "never":
@@ -690,7 +692,8 @@ def signed_outputs(
         tool = None,
         detached_signatures = None,
         formats = {},
-        attr_prefix = "signing_"):
+        attr_prefix = "signing_",
+        unsigned = []):
     """Declares one output artifact per source, plus cosign's sidecar files.
 
     Every source keeps its own shape: a file is signed into a file and a
@@ -728,6 +731,8 @@ def signed_outputs(
             which decides which sources get `.sig`/`.bundle.json` files.
         formats: `File` to binary-format mapping from `binary_formats()`.
         attr_prefix: the prefix the signing attributes were declared with.
+        unsigned: sources to copy through with no signature of any kind,
+            whatever `tool` and `detached_signatures` say.
 
     Returns:
         A struct with:
@@ -803,6 +808,9 @@ def signed_outputs(
     for src in srcs:
         relpath = _output_relpath(src)
 
+        if src in unsigned:
+            signers[src.path] = "none"
+
         if src.is_directory:
             # The files inside are only known when the action runs, which is
             # what a tree artifact exists for. Nothing about it is declared
@@ -813,7 +821,9 @@ def signed_outputs(
             signed.append(out)
             continue
 
-        signer = tool_mode if tool_mode != "auto" else _detect_tool(src, formats)
+        signer = signers.get(src.path) or (
+            tool_mode if tool_mode != "auto" else _detect_tool(src, formats)
+        )
         signers[src.path] = signer
 
         claim(relpath, src, "")
@@ -903,7 +913,12 @@ def sign_action(
     if sctx == None:
         sctx = signing_context(
             ctx,
-            srcs = srcs,
+            # Sources copied through unsigned need no signer.
+            srcs = [
+                f
+                for f in srcs
+                if outs == None or outs.signers.get(f.path) != "none"
+            ],
             formats = formats,
             attr_prefix = attr_prefix,
         )

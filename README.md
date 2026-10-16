@@ -384,6 +384,58 @@ the signed installer. A target that wraps several has several outputs, so use
 
 For `oci_image` sources, `sign` copies the OCI layout output, signs the root manifest blob with `cosign sign-blob` (when a key resolves), and writes the signature bundle under `signatures/` in the output layout. Other directory artifacts retain their complete directory structure and are traversed recursively, signing individual files selected by extension (for example, `.exe` and `.dll`) and, for files with no extension, by parsing their headers with [LIEF](https://lief.re/). Files without a native signer receive colocated cosign `.sig` and `.bundle.json` outputs. Files inside a tree are the one place headers are still read: a tree's contents do not exist until the action runs, so nothing inside it can be classified from its producing rule, and nothing inside it is declared file by file either — which is what makes reading them safe there and not elsewhere. Note that with `tool = "auto"` any directory artifact requires every signing toolchain to be registered — see [Setup](#setup).
 
+### Signing once
+
+A file that already carries an embedded signature is **not signed again**.
+Native signers replace a file's signature rather than adding to it, so
+re-signing a vendor's DLL or a jar from Maven Central would swap their identity
+for yours. Instead the file is delivered byte for byte as it arrived. This
+makes it safe to sign whole outputs that mix your code with someone else's,
+such as a `publish_binary` directory or a deploy jar's dependencies.
+
+What counts as "already signed":
+
+| Format | Signer | Already signed when |
+| --- | --- | --- |
+| PE, MSI, CAB, scripts, … | osslsigncode | `osslsigncode extract-signature` finds an Authenticode signature |
+| Mach-O | codesign | the code signature has a non-empty CMS blob, i.e. an identity signed it |
+| Jar | jarsigner | it contains a `META-INF/*.SF` signature file |
+
+Ad-hoc signatures don't count, since they carry no identity. That includes the
+one every arm64 Mach-O gets from its linker, so freshly built Mach-O binaries are
+still signed. Files are checked one at a time, including those inside a
+directory artifact. Whatever is signed as a unit (`.app` bundles, `.pkg`,
+`.dmg` and OCI layouts) is signed as before.
+
+A detached signature planned for an already-signed file is still produced,
+because it is added beside the file rather than replacing anything.
+
+### Choosing which sources are signed
+
+The `sign` rule's `include` and `exclude` take globs over each source's
+`short_path` (`*` stays within a directory and `**` crosses directories).
+Sources they leave out are copied through unsigned, with no detached signature
+either, whatever `tool` or `detached_signatures` say.
+
+```starlark
+sign(
+    name = "signed_publish",
+    src = ":publish",  # rules_dotnet publish_binary
+    certificate = ":release_cert",
+    exclude = [
+        "**/Newtonsoft.Json.dll",
+        "**/runtimes/**",
+    ],
+)
+```
+
+- `include`: when set, only matching sources are signed.
+- `exclude`: matching sources are never signed, and it wins over `include`.
+
+Use these for files that sign-once can't recognise as someone else's: an
+unsigned third-party library, or a file that isn't actually the format its name
+suggests. A directory artifact is matched as a whole and not file by file.
+
 ### Stamping
 
 `{KEY}` placeholders in `certificate`/`password`/`identity` are resolved
