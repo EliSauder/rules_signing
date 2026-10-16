@@ -1,3 +1,4 @@
+load("@bazel_lib//lib:glob_match.bzl", "glob_match")
 load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS")
 load(
     "//signing/private:action.bzl",
@@ -17,12 +18,23 @@ def _sign_impl(ctx):
     # answer rather than three that could disagree.
     formats = binary_formats(ctx.attr.src)
 
+    def matches(patterns, f):
+        return [p for p in patterns if glob_match(p, f.short_path)]
+
+    unsigned = [
+        f
+        for f in srcs
+        if (ctx.attr.include and not matches(ctx.attr.include, f)) or
+           matches(ctx.attr.exclude, f)
+    ]
+
     outs = signed_outputs(
         ctx,
         srcs = srcs,
         out_name = ctx.attr.out if ctx.attr.out else None,
         formats = formats,
         attr_prefix = "",
+        unsigned = unsigned,
     )
 
     if srcs:
@@ -62,6 +74,17 @@ sign = rule(
                   "placed under, relative to the package. Defaults to " +
                   "`<name>.signed`. The directory itself is not an output; " +
                   "the files inside it are.",
+        ),
+        "include": attr.string_list(
+            doc = "Globs over source paths (`short_path`, `**` crossing " +
+                  "directories). When set, only matching sources are signed; " +
+                  "the rest are copied through unsigned.",
+        ),
+        "exclude": attr.string_list(
+            doc = "Globs over source paths. Matching sources are copied " +
+                  "through unsigned, with no detached signature either, " +
+                  "whatever `tool` or `detached_signatures` say. Wins over " +
+                  "`include`. A directory artifact is matched as a whole.",
         ),
         # Unprefixed: `sign` owns its whole attribute surface, so there is
         # nothing here for the signing options to collide with, and these

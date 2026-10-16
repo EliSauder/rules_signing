@@ -78,6 +78,70 @@ def sniff_binary_format(path: str) -> str:
     return ""
 
 
+def _tool_output(cmd: Sequence[str]) -> Optional[Tuple[int, str]]:
+    """Runs a read-only check, or returns None if the tool can't be run."""
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+    except OSError:
+        # Unusable here, e.g. a fake in a unit test: signing will then report
+        # a missing or broken toolchain itself.
+        return None
+    return result.returncode, result.stdout
+
+
+def has_embedded_signature(signer: str, path: str, args: argparse.Namespace) -> bool:
+    """Whether `path` already carries a signature `signer` would replace.
+
+    Files are signed once: whoever signed a file first -- a vendor, Microsoft,
+    another build step -- keeps their signature, and re-signing it would
+    replace their identity with ours. Each signer's own tool answers the
+    question. Only regular files are checked, which includes each file walked
+    out of a directory; what is signed as a unit (bundles, flat packages, disk
+    images) is signed as before.
+    """
+
+    if not os.path.isfile(path):
+        return False
+
+    if signer == "osslsigncode" and args.osslsigncode_tool:
+        # Exits 0 only when there is a signature to extract.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = _tool_output([
+                args.osslsigncode_tool,
+                "extract-signature",
+                "-in",
+                path,
+                "-out",
+                os.path.join(tmp, "signature"),
+            ])
+        return out is not None and out[0] == 0
+
+    if signer == "codesign" and args.codesign_tool:
+        # rcodesign reports a signature's CMS blob, which is what carries an
+        # identity. Ad-hoc and linker signatures -- every arm64 binary has
+        # one -- print `cms: null`, and are signed over like unsigned files.
+        out = _tool_output([args.codesign_tool, "print-signature-info", path])
+        return (
+            out is not None
+            and out[0] == 0
+            and re.search(r"^\s*cms:\s*$", out[1], re.MULTILINE) is not None
+        )
+
+    if signer == "jarsigner" and args.jarsigner_tool:
+        # Exits 0 for unsigned jars too, so only the verdict line tells.
+        out = _tool_output([args.jarsigner_tool, "-verify", path])
+        return out is not None and out[0] == 0 and "jar is unsigned" not in out[1]
+
+    return False
+
+
 def detect_tool(path: str, infile: Optional[str] = None) -> str:
     p = path.lower()
     if p.endswith(_OSSLSIGNCODE_EXT):
@@ -1257,6 +1321,11 @@ def sign_one(
     `--detached-signatures` combine.
     """
 
+    if signer == "none":
+        # Excluded by the caller: copied through, with no signature of any kind.
+        passthrough(infile, outfile)
+        return
+
     if pathlib.Path(infile).is_dir():
         selected = tool_mode
         if selected == "auto":
@@ -1365,10 +1434,18 @@ def apply_signature_plan(
     the file as it will be delivered, signed contents included. Verifying the
     detached signature against the artifact therefore succeeds, which it would
     not if the bytes were signed before the native signer rewrote them.
+
+    A file that already carries an embedded signature keeps it: see
+    `has_embedded_signature`. It is delivered unchanged, and still gets its
+    detached signature if one was planned, since that adds rather than
+    replaces.
     """
 
     source = infile
-    if native:
+    if native and has_embedded_signature(native, infile, args):
+        passthrough(infile, outfile)
+        source = outfile
+    elif native:
         sign_file(
             selected=native,
             infile=infile,

@@ -285,6 +285,98 @@ class SignToolUnitTest(unittest.TestCase):
                 )
             self.assertIn("no certificate resolved", str(raised.exception))
 
+    def test_an_unsigned_source_is_copied_through_untouched(self) -> None:
+        """Signer "none" is what `include`/`exclude` route a file to."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "Vendor.dll"
+            source.write_bytes(b"not a PE\n")
+
+            args = self._args()
+            args.detached_signatures = "always"
+
+            out = root / "out" / "Vendor.dll"
+            sign_tool.sign_one(
+                tool_mode="osslsigncode",
+                signer="none",
+                relpath="Vendor.dll",
+                infile=str(source),
+                outfile=str(out),
+                args=args,
+                cert_path=str(root / "cert.pem"),
+                password="",
+                identity="",
+            )
+
+            self.assertEqual(out.read_bytes(), b"not a PE\n")
+            self.assertFalse(pathlib.Path(str(out) + ".sig").exists())
+
+    def test_each_signers_tool_decides_whether_a_file_is_signed(self) -> None:
+        """The tools' own verdicts, as they print them, decide sign-once.
+
+        Ad-hoc and linker Mach-O signatures (every arm64 binary has one) carry
+        no CMS blob and so no identity, and are signed over.
+        """
+
+        unsigned_macho = "  code_directory:\n    flags: CodeSignatureFlags(ADHOC | LINKER_SIGNED)\n  cms: null\n"
+        signed_macho = "  - slot: CMS Signature (65536)\n  cms:\n    signers:\n"
+        cases = [
+            ("osslsigncode", (0, ""), True),
+            ("osslsigncode", (255, "Failed"), False),
+            ("codesign", (0, signed_macho), True),
+            ("codesign", (0, unsigned_macho), False),
+            ("codesign", (1, "Error: specified path is not of a recognized type"), False),
+            ("jarsigner", (0, "jar verified.\n"), True),
+            ("jarsigner", (0, "\njar is unsigned.\n"), False),
+            ("jarsigner", (1, "jarsigner: java.util.zip.ZipException"), False),
+            ("jarsigner", None, False),
+        ]
+        with tempfile.NamedTemporaryFile() as f:
+            for signer, output, signed in cases:
+                with (
+                    self.subTest(signer=signer, output=output),
+                    mock.patch.object(sign_tool, "_tool_output", return_value=output),
+                ):
+                    self.assertEqual(
+                        sign_tool.has_embedded_signature(signer, f.name, self._args()),
+                        signed,
+                    )
+
+    def test_a_tool_that_cannot_run_is_left_to_signing_to_report(self) -> None:
+        """A missing or unrunnable tool is not mistaken for a signed file."""
+
+        _, pe = _binary_fixtures()
+        self.assertFalse(sign_tool.has_embedded_signature("osslsigncode", pe, self._args()))
+
+    def test_an_already_signed_binary_is_delivered_unchanged(self) -> None:
+        """The existing signature is kept; the planned detached one is added."""
+
+        _, pe = _binary_fixtures()
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(sign_tool, "has_embedded_signature", return_value=True),
+            mock.patch.object(sign_tool, "sign_file") as sign_file,
+            mock.patch.object(sign_tool, "sign_blob_with_cosign") as cosign,
+        ):
+            root = pathlib.Path(tmp)
+            out = root / "out" / "hello_pe"
+            sign_tool.apply_signature_plan(
+                native="osslsigncode",
+                detached=True,
+                infile=pe,
+                outfile=str(out),
+                args=self._args(),
+                cert_path=str(root / "cert.pem"),
+                password="",
+                identity="",
+            )
+
+            sign_file.assert_not_called()
+            self.assertEqual(out.read_bytes(), pathlib.Path(pe).read_bytes())
+            self.assertEqual(cosign.call_args.kwargs["infile"], str(out))
+
     def test_detect_tool(self) -> None:
         self.assertEqual(sign_tool.detect_tool("bin/App.EXE"), "osslsigncode")
         self.assertEqual(sign_tool.detect_tool("dist/image.dmg"), "codesign")
