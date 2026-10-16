@@ -1320,6 +1320,11 @@ def plan_signature(
     rather than leaving it to follow from the file's name.
     """
 
+    if signer == "none":
+        # Analysis found bytes this build did not produce; they are copied
+        # through unsigned whatever the tool or detached-signature policy.
+        return "", False
+
     if signer in NATIVE_TOOLS:
         native = signer
         routed_to_cosign = False

@@ -38,9 +38,11 @@ load(
     "is_forward_entry",
     "is_jar_outputs_entry",
     "is_not_native_entry",
+    "is_provenance_entry",
     "MACHO",
     "NOT_NATIVE",
     "PE",
+    "PREBUILT",
     "lookup",
     "output_names_are_evidence",
 )
@@ -121,6 +123,37 @@ def _forwarded(ctx, entry, outputs):
 
     return formats
 
+def _provenance(ctx, entry, target, outputs):
+    """Marks outputs that are, or copy, files this build did not produce.
+
+    Copies are new `File`s with nothing linking them to their originals, so
+    they are traced by name. A name that matches a source file anywhere the
+    rule could have copied from is enough: a project does not ship two
+    different files under one name beside each other.
+    """
+    origins = [target[DefaultInfo].default_runfiles.files]
+    for attr_name in entry.origins:
+        dep = getattr(ctx.rule.attr, attr_name, None)
+        for t in (dep if type(dep) == "list" else [dep]):
+            if type(t) == "Target" and DefaultInfo in t:
+                origins.append(t[DefaultInfo].files)
+                origins.append(t[DefaultInfo].default_runfiles.files)
+
+    traced = {}
+    for f in depset(transitive = origins).to_list():
+        traced[f.basename] = traced.get(f.basename, False) or f.is_source
+
+    executable = target[DefaultInfo].files_to_run.executable if entry.copies else None
+    fmt = _platform_format(ctx)
+
+    formats = {}
+    for f in outputs:
+        if f == executable:
+            formats[f] = fmt if fmt else NOT_NATIVE
+        elif f.is_source or traced.get(f.basename) or (entry.copies and f.basename not in traced):
+            formats[f] = PREBUILT
+    return formats
+
 def _aspect_impl(target, ctx):
     # A rule that knows what it builds can say so directly, which is both
     # more accurate than a table row and available to rules this project has
@@ -137,6 +170,9 @@ def _aspect_impl(target, ctx):
 
     if is_forward_entry(entry):
         return [BinaryFormatInfo(formats = _forwarded(ctx, entry, outputs))]
+
+    if is_provenance_entry(entry):
+        return [BinaryFormatInfo(formats = _provenance(ctx, entry, target, outputs))]
 
     if is_not_native_entry(entry):
         # Conclusive for every output, not just the executable: a rule like

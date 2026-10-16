@@ -26,6 +26,7 @@ platform it is being built for:
     "my_binary": executable(),          # the rule's executable output
     "my_shared_library": all_outputs(), # every output is a native library
     "my_copy_rule": forward("src"),     # bytes come from another target
+    "my_bundle": provenance("binary"),  # own code beside prebuilt deps
 
 `jar_outputs()` is the odd one out: it does not describe a native binary at
 all, but a `.jar` archive jarsigner can embed a signature into, for rules
@@ -67,6 +68,11 @@ JAR = "jar"
 # perfectly ordinary ELF a Windows PE and hand it to osslsigncode.
 NOT_NATIVE = ""
 
+# Bytes this build did not produce -- a checked-in or downloaded file, or a
+# copy of one -- which are copied into the output unsigned rather than signed
+# as if they were the project's own. Only `provenance()` rows give it.
+PREBUILT = "prebuilt"
+
 # Entry kinds. Their values are the strings a row carries, so a malformed
 # table fails loudly at load time rather than silently classifying nothing.
 _EXECUTABLE = "executable"
@@ -74,6 +80,7 @@ _ALL_OUTPUTS = "all_outputs"
 _JAR_OUTPUTS = "jar_outputs"
 _FORWARD = "forward"
 _NOT_NATIVE = "not_native"
+_PROVENANCE = "provenance"
 
 def executable(format = None):
     """The rule's executable output is a native binary.
@@ -168,6 +175,38 @@ def not_native(reason = ""):
     """
     return struct(kind = _NOT_NATIVE, attrs = [], format = None, names_are_evidence = True, reason = reason)
 
+def provenance(*origins, **kwargs):
+    """Each output is judged by where its bytes came from.
+
+    For rules that place their dependencies' files beside their own, such as
+    an application bundled with the libraries it was linked against. An
+    output is traced, by file name, to the files the rule could have taken it
+    from: its own runfiles and the files and runfiles of the `origins`
+    attributes' targets. Any output that is, or is named like, a source file
+    among those -- something checked in or downloaded rather than built -- is
+    `PREBUILT` and copied through unsigned. The rest are left to their names,
+    the same as a file no rule spoke for.
+
+    Args:
+        *origins: attribute names holding the targets outputs are copied from.
+        **kwargs: `copies` (default False) -- the rule builds nothing but its
+            executable, and every other output is a copy. The executable then
+            takes the configuration's format, as with `executable()`, and an
+            output that traces to nothing is `PREBUILT` too: it was copied
+            from somewhere this rule's providers do not expose.
+    """
+    copies = kwargs.pop("copies", False)
+    if kwargs:
+        fail("provenance() got unexpected keyword arguments: {}".format(sorted(kwargs)))
+    return struct(
+        kind = _PROVENANCE,
+        attrs = [],
+        origins = list(origins),
+        copies = copies,
+        format = None,
+        names_are_evidence = True,
+    )
+
 # ---------------------------------------------------------------------------
 # The table
 #
@@ -216,12 +255,23 @@ RULE_KINDS = {
     "apple_universal_binary": all_outputs(),
 
     # --- rules_dotnet -------------------------------------------------------
-    # A managed assembly is a PE on every host, so the format is pinned rather
-    # than taken from the target platform. The rules' executable output is a
-    # `.sh`/`.bat` launcher, not the assembly, so `executable()` would pick
-    # the wrong file -- the `.dll` is what lands in `DefaultInfo.files`.
-    "csharp_library": all_outputs(format = PE),
-    "fsharp_library": all_outputs(format = PE),
+    # Assemblies the build compiles are judged by name (`.dll`/`.exe` is a PE
+    # on every host) beside their `.xml` docs. NuGet packages, runtime packs
+    # and imported DLLs are source files, so copies of them -- the
+    # `runtimes/<rid>/native/` links a binary makes, everything
+    # `publish_binary` gathers -- pass through unsigned. `publish_binary`
+    # (rule `_publish_binary`) builds only its apphost, which is signed.
+    "csharp_library": provenance(),
+    "fsharp_library": provenance(),
+    "csharp_binary": provenance(),
+    "fsharp_binary": provenance(),
+    "csharp_test": provenance(),
+    "fsharp_test": provenance(),
+    "import_library": provenance(),
+    "import_dll": provenance(),
+    "dotnet_toolchain": provenance(),
+    "_publish_binary": provenance("binary", copies = True),
+    "dotnet_tool": not_native("a `.sh`/`.bat` launcher running a NuGet tool"),
 
     # --- JVM rulesets --------------------------------------------------------
     # A `.jar` is a zip, not a compiled binary, but jarsigner can embed a
@@ -343,6 +393,9 @@ def is_jar_outputs_entry(entry):
 
 def is_forward_entry(entry):
     return entry.kind == _FORWARD
+
+def is_provenance_entry(entry):
+    return entry.kind == _PROVENANCE
 
 def forwarded_attrs(entry):
     return entry.attrs

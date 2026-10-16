@@ -314,9 +314,9 @@ per rule, keyed by the rule's name as a string:
 RULE_KINDS = {
     "cc_binary": executable(),           # the rule's executable output
     "cc_shared_library": all_outputs(),  # every output is a native library
-    "csharp_library": all_outputs(format = PE),  # PE on every platform
     "java_binary": jar_outputs(),        # only the `.jar`, not its launcher
     "_copy_file": forward("src"),        # bytes come from another target
+    "_publish_binary": provenance("binary", copies = True),  # own code + packages
     "py_binary": not_native("a bootstrap script"),
 }
 ```
@@ -338,6 +338,20 @@ behind a platform transition behind a copy is still recognised. Forwarding
 matches by `File` identity where it can — which is exact, and is why one
 binary in a `filegroup` full of data files is still found — and falls back to
 pairing in order only for rules that mint new `File`s.
+
+`provenance` is for rules that put their dependencies' files beside their own,
+such as an application published with its packages. Each output is traced by
+file name to the rule's runfiles and the `origins` attributes' files; one that
+is a copy of a checked-in or downloaded file is copied through **unsigned**,
+with no detached signature, whatever `tool` or `detached_signatures` say. The
+build's own outputs are judged by name as usual. With `copies = True` the rule
+builds only its executable, which is signed like `executable()`'s, and any
+other output that traces to nothing is treated as copied too.
+
+That is how rules_dotnet is covered: signing a `publish_binary` (or a
+`csharp_binary`) signs the project's compiled assemblies and the apphost, and
+leaves NuGet packages, runtime-pack files and their native libraries as they
+were delivered.
 
 A rule can also answer for itself, instead of being described from the outside,
 by returning a `BinaryFormatInfo` mapping its own `File`s to `"pe"` or

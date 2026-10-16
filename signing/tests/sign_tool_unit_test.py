@@ -190,6 +190,23 @@ class SignToolUnitTest(unittest.TestCase):
             ("osslsigncode", False),
         )
 
+    def test_a_prebuilt_file_is_never_signed(self) -> None:
+        """`none` outranks both the tool and the detached-signature policy."""
+
+        args = self._args()
+        args.detached_signatures = "always"
+
+        self.assertEqual(
+            sign_tool.plan_signature(
+                signer="none",
+                tool_mode="cosign",
+                relpath="bin/Vendor.dll",
+                infile="/src/Vendor.dll",
+                args=args,
+            ),
+            ("", False),
+        )
+
     def test_a_blob_with_no_detached_signature_is_copied_through(self) -> None:
         """Under "never" nothing can sign a plain file, so it is passed along.
 

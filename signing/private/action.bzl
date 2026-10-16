@@ -18,7 +18,7 @@ Everything such a rule needs is exposed here:
 """
 
 load("@bazel_lib//lib:stamping.bzl", "STAMP_ATTRS", "maybe_stamp")
-load("//signing/private:binary_kinds.bzl", "JAR", "MACHO", "PE")
+load("//signing/private:binary_kinds.bzl", "JAR", "MACHO", "PE", "PREBUILT")
 load(
     "//signing/private:common.bzl",
     "add_cert_args",
@@ -78,6 +78,7 @@ _FORMAT_SIGNERS = {
     PE: "osslsigncode",
     MACHO: "codesign",
     JAR: "jarsigner",
+    PREBUILT: "none",
 }
 
 def _detect_tool(src, formats = {}):
@@ -104,6 +105,9 @@ def _detect_tool(src, formats = {}):
 
     Anything still unaccounted for is signed with a detached signature, which
     is the one option that works on a file whose contents are unknown.
+
+    `"none"` is the answer for a `PREBUILT` file: bytes this build did not
+    produce are copied through unsigned.
     """
     fmt = formats.get(src)
     if fmt != None:
@@ -132,6 +136,8 @@ def _wants_detached(signer, detached_signatures):
     the same way for every source, which is the point of them -- the output
     shape stops depending on what the source is called.
     """
+    if signer == "none":
+        return False
     if detached_signatures == "always":
         return True
     if detached_signatures == "never":
@@ -813,7 +819,11 @@ def signed_outputs(
             signed.append(out)
             continue
 
-        signer = tool_mode if tool_mode != "auto" else _detect_tool(src, formats)
+        # A file this build did not produce is not signed by any tool,
+        # including one named explicitly.
+        signer = _detect_tool(src, formats)
+        if tool_mode != "auto" and signer != "none":
+            signer = tool_mode
         signers[src.path] = signer
 
         claim(relpath, src, "")

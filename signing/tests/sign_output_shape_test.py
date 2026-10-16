@@ -313,6 +313,64 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assertIn("readme.txt.sig", names)
         self.assertIn("readme.txt.bundle.json", names)
 
+    def test_a_dotnet_binary_signs_its_assembly_not_its_nuget_natives(self) -> None:
+        """The compiled assembly is signed in place; the NuGet native is not.
+
+        `csharp_binary` links its packages' native libraries in beside the
+        assembly. Those are someone else's bytes, so they pass through
+        unsigned, with no sidecars either.
+        """
+
+        out = "signing/tests/dotnet/app/net9.0/"
+        self.assert_outputs(
+            "app",
+            {
+                out + "app.dll": (),
+                out + "app.xml": _SIDECARS,
+                out + "runtimes/linux-x64/native/libvendor.so": (),
+            },
+        )
+
+    def _publish_expectations(self, case: str, built: tuple) -> dict:
+        """`publish_binary`'s outputs: what it copied from packages is untouched.
+
+        The runtime identifier and the apphost's name follow the platform, so
+        they are read back rather than pinned. `built` is the sidecars every
+        file the build produced gets; the prebuilts never get any.
+        """
+
+        prefix = "signing/tests/dotnet/publish/publish/"
+        (rid,) = {rel[len(prefix):].split("/")[0] for rel in _outputs(case)}
+        out = prefix + rid + "/"
+        expected = {
+            out + "app.dll": built,
+            out + "lib.dll": built,
+            out + "app.deps.json": _SIDECARS,
+            out + "app.runtimeconfig.json": _SIDECARS,
+            out + "Vendor.dll": (),
+            out + "runtimes/linux-x64/native/libvendor.so": (),
+        }
+        if sys.platform == "win32":
+            expected[out + "app.exe"] = built
+        elif sys.platform == "darwin":
+            expected[out + "app"] = built
+        else:
+            # Linux executables have no signature format of their own.
+            expected[out + "app"] = _SIDECARS
+        return expected
+
+    def test_publishing_signs_only_what_the_build_compiled(self) -> None:
+        """The project's assemblies and apphost are signed; packages are not."""
+
+        self.assert_outputs("publish", self._publish_expectations("publish", ()))
+
+    def test_prebuilts_stay_unsigned_whatever_else_is_asked(self) -> None:
+        """Neither `always` nor an explicit `tool` reaches a prebuilt file."""
+
+        for case in ("publish_always", "publish_cosign"):
+            with self.subTest(case=case):
+                self.assert_outputs(case, self._publish_expectations(case, _SIDECARS))
+
 
 if __name__ == "__main__":
     unittest.main()

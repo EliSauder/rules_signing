@@ -994,6 +994,14 @@ py_test(
         "signing/tests/signed_always_detached.signed",
         "--case=never::$(rootpath :signed_never_detached_outputs)::" +
         "signing/tests/signed_never_detached.signed",
+        "--case=app::$(rootpath //signing/tests/dotnet:signed_app_outputs)::" +
+        "signing/tests/dotnet/signed_app.signed",
+        "--case=publish::$(rootpath //signing/tests/dotnet:signed_publish_outputs)::" +
+        "signing/tests/dotnet/signed_publish.signed",
+        "--case=publish_always::$(rootpath //signing/tests/dotnet:signed_publish_always_outputs)::" +
+        "signing/tests/dotnet/signed_publish_always.signed",
+        "--case=publish_cosign::$(rootpath //signing/tests/dotnet:signed_publish_cosign_outputs)::" +
+        "signing/tests/dotnet/signed_publish_cosign.signed",
     ],
     data = [
         ":signed_always_detached",
@@ -1020,6 +1028,14 @@ py_test(
         ":signed_real_pe_detected_outputs",
         ":signed_real_pe_pem",
         ":signed_real_pe_pem_outputs",
+        "//signing/tests/dotnet:signed_app",
+        "//signing/tests/dotnet:signed_app_outputs",
+        "//signing/tests/dotnet:signed_publish",
+        "//signing/tests/dotnet:signed_publish_outputs",
+        "//signing/tests/dotnet:signed_publish_always",
+        "//signing/tests/dotnet:signed_publish_always_outputs",
+        "//signing/tests/dotnet:signed_publish_cosign",
+        "//signing/tests/dotnet:signed_publish_cosign_outputs",
     ],
     deps = ["@rules_python//python/runfiles"],
 )
