@@ -1710,85 +1710,6 @@ def gen_self_signed_mode(args: argparse.Namespace) -> None:
             pathlib.Path(args.public_key_out).write_text(pubkey, encoding="utf-8")
 
 
-def _der_read(data: bytes, pos: int) -> Tuple[int, bytes, int]:
-    """Reads one DER element, returning (tag, content, position after it)."""
-
-    tag = data[pos]
-    length = data[pos + 1]
-    pos += 2
-    if length & 0x80:
-        count = length & 0x7F
-        length = int.from_bytes(data[pos:pos + count], "big")
-        pos += count
-    return tag, data[pos:pos + length], pos + length
-
-
-def _der_sequence_items(content: bytes) -> list:
-    items = []
-    pos = 0
-    while pos < len(content):
-        tag, body, pos = _der_read(content, pos)
-        items.append((tag, body))
-    return items
-
-
-def parse_rsa_private_key_der(der: bytes) -> Dict[str, int]:
-    """Extracts the RSA parameters from a PKCS#1 or PKCS#8 DER private key."""
-
-    tag, body, _ = _der_read(der, 0)
-    if tag != 0x30:
-        raise ValueError("sign_tool: not a DER-encoded private key")
-    items = _der_sequence_items(body)
-    if len(items) == 3 and items[2][0] == 0x04:
-        # PKCS#8 wraps the PKCS#1 structure in an OCTET STRING.
-        tag, body, _ = _der_read(items[2][1], 0)
-        items = _der_sequence_items(body)
-    if len(items) < 9:
-        raise ValueError("sign_tool: unrecognized RSA private key structure")
-    names = ("version", "n", "e", "d", "p", "q", "dp", "dq", "qinv")
-    return {
-        name: int.from_bytes(value, "big")
-        for name, (_, value) in zip(names, items)
-    }
-
-
-def build_snk_blobs(params: Dict[str, int]) -> Tuple[bytes, bytes]:
-    """Builds .NET strong-name key files from RSA parameters.
-
-    Returns the key pair (a CAPI PRIVATEKEYBLOB, which is what an `.snk`
-    holds) and the public-only key (a PUBLICKEYBLOB behind the 12-byte
-    strong-name header, which is what `PublicSign`/`DelaySign` consume).
-    """
-
-    bits = (params["n"].bit_length() + 7) // 8 * 8
-    half = bits // 16
-    full = bits // 8
-
-    def le(value: int, size: int) -> bytes:
-        return value.to_bytes(size, "little")
-
-    exponent = le(params["e"], 4)
-    private_blob = (
-        bytes([0x07, 0x02, 0x00, 0x00]) + le(0x2400, 4) +
-        b"RSA2" + le(bits, 4) + exponent +
-        le(params["n"], full) +
-        le(params["p"], half) +
-        le(params["q"], half) +
-        le(params["dp"], half) +
-        le(params["dq"], half) +
-        le(params["qinv"], half) +
-        le(params["d"], full)
-    )
-    public_blob = (
-        bytes([0x06, 0x02, 0x00, 0x00]) + le(0x2400, 4) +
-        b"RSA1" + le(bits, 4) + exponent +
-        le(params["n"], full)
-    )
-    # SigAlgId (RSA sign), HashAlgId (SHA-1), then the blob's byte length.
-    public_key = le(0x2400, 4) + le(0x8004, 4) + le(len(public_blob), 4) + public_blob
-    return private_blob, public_key
-
-
 def convert_mode(args: argparse.Namespace) -> None:
     """Handles `--mode convert`.
 
@@ -1870,23 +1791,19 @@ def convert_mode(args: argparse.Namespace) -> None:
                 cmd.extend(["-certfile", args.ca_file])
             run_cmd(cmd, env=env)
         elif fmt == "snk":
-            result = subprocess.run(
-                [openssl, "rsa", "-in", pem_path, "-outform", "DER"] + key_pass,
-                check=False, capture_output=True, env=key_env,
-            )
-            if result.returncode != 0:
-                raise SystemExit(
-                    "sign_tool: strong-name keys must be RSA, but no RSA "
-                    "private key could be read from the certificate:\n" +
-                    result.stderr.decode("utf-8", "replace")
-                )
-            private_blob, public_key = build_snk_blobs(
-                parse_rsa_private_key_der(result.stdout)
-            )
-            pathlib.Path(args.out).write_bytes(private_blob)
+            if not args.snk_tool:
+                raise SystemExit("sign_tool: --convert-format snk needs --snk-tool")
+            plain_key = pathlib.Path(tmpdir) / "plain-key.pem"
+            plain_key.write_text(private_key_pem(), encoding="utf-8")
+            cmd = [args.snk_tool, "--in", str(plain_key), "--out", args.out]
             if args.public_key_out:
                 ensure_parent(args.public_key_out)
-                pathlib.Path(args.public_key_out).write_bytes(public_key)
+                cmd.extend(["--public-out", args.public_key_out])
+            # The converter is itself a runfiles-aware launcher; the variables
+            # inherited from this tool's own runfiles would point it at the
+            # wrong tree.
+            env = {k: v for k, v in os.environ.items() if not k.startswith("RUNFILES_")}
+            run_cmd(cmd, env=env)
         elif fmt == "cosign":
             if not args.cosign_tool:
                 raise SystemExit("sign_tool: --convert-format cosign needs --cosign-tool")
@@ -2092,6 +2009,7 @@ def main() -> None:
     # --mode convert
     parser.add_argument("--convert-format", choices=("pem", "p12", "keystore", "snk", "cosign"), default="pem")
     parser.add_argument("--alias", default="")
+    parser.add_argument("--snk-tool", default="")
     parser.add_argument("--out-password-template", default="")
     parser.add_argument("--out-password-env", default="")
 

@@ -1,0 +1,11 @@
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary")
+
+# Used by this module's own tests. Not reachable by consumers: rules_dotnet is a
+# dev-only dependency, so they build the converter from
+# //signing/private/tools:SnkTool.cs with their own rules_dotnet.
+csharp_binary(
+    name = "snk_tool",
+    srcs = ["//signing/private/tools:SnkTool.cs"],
+    target_frameworks = ["net9.0"],
+    visibility = ["//visibility:public"],
+)

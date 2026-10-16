@@ -10,7 +10,7 @@ def _needs_stamp(values):
             return True
     return False
 
-def _convert(ctx, fmt, outputs, out_password = False):
+def _convert(ctx, fmt, outputs, out_password = False, snk_tool = None):
     """Runs the `convert` mode of sign_tool.
 
     Args:
@@ -19,6 +19,7 @@ def _convert(ctx, fmt, outputs, out_password = False):
         outputs: dict with a required `out` File and optional `cert_out` and
             `public_key_out` Files.
         out_password: whether the format is protected by an output password.
+        snk_tool: the strong-name converter, for the `snk` format.
     """
     info = ctx.attr.certificate[SigningCertificateInfo]
     if info.certificate == None:
@@ -64,6 +65,10 @@ def _convert(ctx, fmt, outputs, out_password = False):
             )
         args.add("--cosign-tool", cosign_file.path)
         inputs.append(cosign_file)
+    tools = [ctx.attr._converter[DefaultInfo].files_to_run]
+    if snk_tool:
+        args.add("--snk-tool", snk_tool[DefaultInfo].files_to_run.executable.path)
+        tools.append(snk_tool[DefaultInfo].files_to_run)
     if info.ca_file:
         args.add("--ca-file", info.ca_file)
         inputs.append(info.ca_file)
@@ -102,6 +107,7 @@ def _convert(ctx, fmt, outputs, out_password = False):
 
     ctx.actions.run(
         executable = ctx.executable._converter,
+        tools = tools,
         arguments = [args],
         inputs = depset(inputs),
         outputs = [f for f in outputs.values() if f != None],
@@ -152,9 +158,19 @@ def _certificate_keystore_impl(ctx):
     return [DefaultInfo(files = depset([out]), runfiles = ctx.runfiles(files = [out]))]
 
 def _certificate_snk_impl(ctx):
+    if ctx.attr.snk_tool == None:
+        fail(
+            "rules_signing: `{}` needs `snk_tool`, a .NET binary built from ".format(ctx.label.name) +
+            "@rules_signing//signing/private/tools:SnkTool.cs, e.g.\n" +
+            "    csharp_binary(\n" +
+            "        name = \"snk_tool\",\n" +
+            "        srcs = [\"@rules_signing//signing/private/tools:SnkTool.cs\"],\n" +
+            "        target_frameworks = [\"net9.0\"],\n" +
+            "    )",
+        )
     out = ctx.actions.declare_file(ctx.label.name + ".snk")
     public_out = ctx.actions.declare_file(ctx.label.name + ".public.snk")
-    _convert(ctx, "snk", {"out": out, "public_key_out": public_out})
+    _convert(ctx, "snk", {"out": out, "public_key_out": public_out}, snk_tool = ctx.attr.snk_tool)
     return [
         DefaultInfo(files = depset([out, public_out]), runfiles = ctx.runfiles(files = [out, public_out])),
         OutputGroupInfo(key_pair = depset([out]), public_key = depset([public_out])),
@@ -254,8 +270,19 @@ certificate_snk = rule(
     doc = "Converts a certificate's RSA key into .NET strong-name key files: " +
           "`<name>.snk` (the key pair) and `<name>.public.snk` (public key " +
           "only, for `PublicSign`/`DelaySign`). Only RSA keys are supported. " +
-          "Requires the openssl toolchain.",
-    attrs = _COMMON_ATTRS,
+          "The key is converted by a small .NET program you build with " +
+          "rules_dotnet (see `snk_tool`). Requires the openssl toolchain.",
+    attrs = dict(_COMMON_ATTRS, **{
+        "snk_tool": attr.label(
+            executable = True,
+            cfg = "exec",
+            doc = "The strong-name converter, a .NET binary built from " +
+                  "`@rules_signing//signing/private/tools:SnkTool.cs` with " +
+                  "your own rules_dotnet. Kept out of rules_signing's own " +
+                  "dependencies so consumers that do not use " +
+                  "`certificate_snk` never need a .NET toolchain.",
+        ),
+    }),
     toolchains = _TOOLCHAINS,
 )
 
