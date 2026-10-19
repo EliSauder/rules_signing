@@ -1,0 +1,130 @@
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary", "csharp_library", "import_library", "publish_binary")
+load("//signing:defs.bzl", "sign")
+load("//signing/tests:manifest.bzl", "file_name_manifest")
+
+package(default_visibility = ["//signing/tests:__pkg__"])
+
+# Stands in for a NuGet package: its files are checked in rather than built.
+# Neither is the binary its name claims, so a build that hands either to a
+# signer fails instead of passing by accident.
+import_library(
+    name = "vendor",
+    libs = ["Vendor.dll"],
+    library_name = "Vendor",
+    native = ["runtimes/linux-x64/native/libvendor.so"],
+    version = "1.0.0",
+)
+
+csharp_library(
+    name = "lib",
+    srcs = ["Lib.cs"],
+    target_frameworks = ["net9.0"],
+    deps = [":vendor"],
+)
+
+csharp_binary(
+    name = "app",
+    srcs = ["App.cs"],
+    target_frameworks = ["net9.0"],
+    deps = [":lib"],
+)
+
+publish_binary(
+    name = "publish",
+    binary = ":app",
+    target_framework = "net9.0",
+)
+
+# The checked-in vendor files are not real binaries, so these targets only
+# build because exclude or include keeps the signers away from them.
+# `csharp_binary` has no default globs, so its `runtimes/` copy needs naming.
+_VENDOR = [
+    "**/Vendor.dll",
+    "**/runtimes/**",
+]
+
+# `publish_binary`'s row already leaves `runtimes/` unsigned, so only the
+# vendor's assembly is named; the native is kept away by the rule's default.
+_VENDOR_DLL = ["**/Vendor.dll"]
+
+sign(
+    name = "signed_app",
+    src = ":app",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    exclude = _VENDOR,
+)
+
+sign(
+    name = "signed_publish",
+    src = ":publish",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    exclude = _VENDOR_DLL,
+)
+
+# Exclusion wins over a detached signature being asked for.
+sign(
+    name = "signed_publish_always",
+    src = ":publish",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    detached_signatures = "always",
+    exclude = _VENDOR_DLL,
+)
+
+sign(
+    name = "signed_publish_cosign",
+    src = ":publish",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    exclude = _VENDOR_DLL,
+    tool = "cosign",
+)
+
+# Only the developer's assemblies; everything else, apphost included, is
+# copied through.
+sign(
+    name = "signed_publish_include",
+    src = ":publish",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    include = [
+        "**/app.dll",
+        "**/lib.dll",
+    ],
+)
+
+# With the rule's defaults off, the native is no longer kept away: being an
+# `.so`, and a text file, it is given a detached signature.
+sign(
+    name = "signed_publish_no_defaults",
+    src = ":publish",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    exclude = _VENDOR_DLL,
+    use_rule_defaults = False,
+)
+
+# The defaults follow the files through a `filegroup`.
+filegroup(
+    name = "publish_group",
+    srcs = [":publish"],
+)
+
+sign(
+    name = "signed_publish_group",
+    src = ":publish_group",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    exclude = _VENDOR_DLL,
+)
+
+[
+    file_name_manifest(
+        name = "signed_{}_outputs".format(name),
+        srcs = [":signed_" + name],
+    )
+    for name in [
+        "app",
+        "publish",
+        "publish_always",
+        "publish_cosign",
+        "publish_include",
+        "publish_no_defaults",
+        "publish_group",
+    ]
+]

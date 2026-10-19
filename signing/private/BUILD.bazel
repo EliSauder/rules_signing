@@ -29,6 +29,7 @@ bzl_library(
         "detect.bzl",
     ],
     visibility = ["//visibility:public"],
+    deps = ["@bazel_lib//lib:glob_match"],
 )
 
 bzl_library(
@@ -57,6 +58,7 @@ bzl_library(
         ":common_bzl",
         ":detect_bzl",
         "//signing:providers_bzl",
+        "@bazel_lib//lib:glob_match",
         "@bazel_lib//lib:stamping",
     ],
 )
