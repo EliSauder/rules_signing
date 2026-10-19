@@ -44,6 +44,22 @@ are `not_native()`, which conclusively marks every output NOT_NATIVE instead
 of relying on that being true by omission: it is what stops the Windows stub
 those rules name `<name>.exe` from being read by that name and handed to a
 native signer.
+
+## Default globs
+
+Every row takes optional `include` and `exclude` lists. They are the defaults
+`sign` applies to that rule's outputs, merged with its own attributes of the
+same names: globs over each output's `short_path` (`*` stays within a
+directory, `**` crosses them). `include` leaves every output it doesn't match
+unsigned, and `exclude` leaves what it matches unsigned. Either way the file
+is copied through with no signature of any kind.
+
+    "_publish_binary": executable(exclude = ["**/runtimes/**"]),
+
+They're for files a ruleset is known to bundle that belong to someone else,
+such as package-manager natives, which sign-once can't recognise because they
+carry no signature to keep. They follow the files through `forward()` rows. A
+`sign` target turns them off with `use_rule_defaults = False`.
 """
 
 # Formats a native signer exists for. ELF is deliberately absent: Linux
@@ -75,7 +91,19 @@ _JAR_OUTPUTS = "jar_outputs"
 _FORWARD = "forward"
 _NOT_NATIVE = "not_native"
 
-def executable(format = None):
+def _entry(kind, attrs = [], format = None, names_are_evidence = True, include = [], exclude = [], reason = ""):
+    """A row of the table. See "Default globs" above for `include`/`exclude`."""
+    return struct(
+        kind = kind,
+        attrs = attrs,
+        format = format,
+        names_are_evidence = names_are_evidence,
+        include = list(include),
+        exclude = list(exclude),
+        reason = reason,
+    )
+
+def executable(format = None, include = [], exclude = []):
     """The rule's executable output is a native binary.
 
     This is `DefaultInfo.files_to_run.executable`, which every rule declaring
@@ -87,10 +115,12 @@ def executable(format = None):
             configuration. Only for rules whose output format does not follow
             the target platform, such as .NET assemblies, which are PE
             everywhere.
+        include: default globs; see "Default globs" in the module docstring.
+        exclude: default globs; see "Default globs" in the module docstring.
     """
-    return struct(kind = _EXECUTABLE, attrs = [], format = format, names_are_evidence = True)
+    return _entry(_EXECUTABLE, format = format, include = include, exclude = exclude)
 
-def all_outputs(format = None):
+def all_outputs(format = None, include = [], exclude = []):
     """Every file the rule reports in `DefaultInfo` is a native binary.
 
     For rules whose whole output *is* the artifact -- a shared library rule,
@@ -99,10 +129,12 @@ def all_outputs(format = None):
 
     Args:
         format: as for `executable`.
+        include: as for `executable`.
+        exclude: as for `executable`.
     """
-    return struct(kind = _ALL_OUTPUTS, attrs = [], format = format, names_are_evidence = True)
+    return _entry(_ALL_OUTPUTS, format = format, include = include, exclude = exclude)
 
-def jar_outputs():
+def jar_outputs(include = [], exclude = []):
     """The `.jar` files among the rule's outputs are jarsigner-signable.
 
     For rules whose executable output is a launcher script beside the actual
@@ -118,8 +150,12 @@ def jar_outputs():
     `<name>.exe`, which with no verdict falls through to being judged by that
     name and signed in place by osslsigncode, corrupting a launcher that was
     never a PE.
+
+    Args:
+        include: as for `executable`.
+        exclude: as for `executable`.
     """
-    return struct(kind = _JAR_OUTPUTS, attrs = [], format = JAR, names_are_evidence = True)
+    return _entry(_JAR_OUTPUTS, format = JAR, include = include, exclude = exclude)
 
 def forward(*attrs, **kwargs):
     """The rule passes another target's bytes through unchanged.
@@ -141,15 +177,20 @@ def forward(*attrs, **kwargs):
             natively signable rather than left for its extension to answer
             for. This describes what the third-party rule does; rules_signing
             never renames anything.
+            `include` and `exclude` are accepted as for `executable`, and
+            add to whatever the forwarded targets' rows already left out.
     """
     names_are_evidence = kwargs.pop("output_names_are_evidence", True)
+    include = kwargs.pop("include", [])
+    exclude = kwargs.pop("exclude", [])
     if kwargs:
         fail("forward() got unexpected keyword arguments: {}".format(sorted(kwargs)))
-    return struct(
-        kind = _FORWARD,
+    return _entry(
+        _FORWARD,
         attrs = list(attrs),
-        format = None,
         names_are_evidence = names_are_evidence,
+        include = include,
+        exclude = exclude,
     )
 
 def not_native(reason = ""):
@@ -166,7 +207,7 @@ def not_native(reason = ""):
     Args:
         reason: why, quoted in documentation and nothing else.
     """
-    return struct(kind = _NOT_NATIVE, attrs = [], format = None, names_are_evidence = True, reason = reason)
+    return _entry(_NOT_NATIVE, reason = reason)
 
 # ---------------------------------------------------------------------------
 # The table
@@ -222,6 +263,12 @@ RULE_KINDS = {
     # the wrong file -- the `.dll` is what lands in `DefaultInfo.files`.
     "csharp_library": all_outputs(format = PE),
     "fsharp_library": all_outputs(format = PE),
+
+    # `publish_binary` is a macro over this rule. Its executable is the
+    # apphost, a native binary for the target platform. Everything under
+    # `runtimes/` is a NuGet package's native library, copied in unsigned
+    # and not the project's to sign.
+    "_publish_binary": executable(exclude = ["**/runtimes/**"]),
 
     # --- JVM rulesets --------------------------------------------------------
     # A `.jar` is a zip, not a compiled binary, but jarsigner can embed a
@@ -354,6 +401,10 @@ def forward_attr_names():
         for attr_name in entry.attrs:
             names[attr_name] = True
     return sorted(names.keys())
+
+def default_globs(entry):
+    """`(include, exclude)`: the row's default globs over its outputs."""
+    return entry.include, entry.exclude
 
 def output_names_are_evidence(entry):
     """Whether this rule's output names may be read as a content hint.

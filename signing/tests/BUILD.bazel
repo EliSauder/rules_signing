@@ -1051,6 +1051,10 @@ py_test(
         "signing/tests/dotnet/signed_publish_cosign.signed",
         "--case=publish_include::$(rootpath //signing/tests/dotnet:signed_publish_include_outputs)::" +
         "signing/tests/dotnet/signed_publish_include.signed",
+        "--case=publish_no_defaults::$(rootpath //signing/tests/dotnet:signed_publish_no_defaults_outputs)::" +
+        "signing/tests/dotnet/signed_publish_no_defaults.signed",
+        "--case=publish_group::$(rootpath //signing/tests/dotnet:signed_publish_group_outputs)::" +
+        "signing/tests/dotnet/signed_publish_group.signed",
     ],
     data = [
         ":signed_always_detached",
@@ -1087,6 +1091,10 @@ py_test(
         "//signing/tests/dotnet:signed_publish_cosign_outputs",
         "//signing/tests/dotnet:signed_publish_include",
         "//signing/tests/dotnet:signed_publish_include_outputs",
+        "//signing/tests/dotnet:signed_publish_no_defaults",
+        "//signing/tests/dotnet:signed_publish_no_defaults_outputs",
+        "//signing/tests/dotnet:signed_publish_group",
+        "//signing/tests/dotnet:signed_publish_group_outputs",
     ],
     deps = ["@rules_python//python/runfiles"],
 )

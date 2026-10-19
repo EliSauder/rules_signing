@@ -29,6 +29,7 @@ bzl_library(
         "detect.bzl",
     ],
     visibility = ["//visibility:public"],
+    deps = ["@bazel_lib//lib:glob_match"],
 )
 
 bzl_library(

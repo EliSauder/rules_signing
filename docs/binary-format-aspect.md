@@ -42,7 +42,8 @@ merely looks like one).
         │         configuration)                               │
         └──────────────────────┬──────────────────────────────┘
                                 ▼
-              BinaryFormatInfo(formats = {File: "pe"|"macho"|"jar"})
+              BinaryFormatInfo(formats = {File: "pe"|"macho"|"jar"},
+                               unsigned = {File: True})
                                 │
                                 ▼
         sign rule reads it via binary_formats(ctx.attr.src)
@@ -101,6 +102,13 @@ macro's — as a plain string. Nothing here loads a ruleset, which means:
 | `forward("attr", ...)` | rule passes another target's bytes through unchanged (copy, rename, wrapper) | aspect recurses into that attribute's dependency's own `BinaryFormatInfo` via `_forwarded()`, matching by file identity, then by position for renamed copies |
 | `not_native(reason)` | rule's outputs are conclusively not native binaries | every output forced `NOT_NATIVE` |
 | *(no row for this kind)* | rule unknown to this project | `lookup()` returns `None`; aspect returns an empty `BinaryFormatInfo({})` — no verdict, not a guess |
+
+Every row also takes optional `include`/`exclude` globs over its outputs'
+`short_path`s. The aspect resolves them into `BinaryFormatInfo.unsigned`, and
+`forward()` rows carry the dependencies' `unsigned` files across, matched the
+same way as formats. `sign` copies those files through unsigned unless
+`use_rule_defaults = False`. A rule returning its own `BinaryFormatInfo` may
+leave `unsigned` unset.
 
 A `not_native()` verdict is deliberately **not the same as an absent row**:
 an absent row means "no opinion," while `not_native()` conclusively marks

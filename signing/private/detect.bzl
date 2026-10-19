@@ -29,8 +29,10 @@ answer for a rule whose outputs this project could not describe from the
 outside, and the only one available to a rule it has never heard of.
 """
 
+load("@bazel_lib//lib:glob_match.bzl", "glob_match")
 load(
     "//signing/private:binary_kinds.bzl",
+    "default_globs",
     "forward_attr_names",
     "forwarded_attrs",
     "is_all_outputs_entry",
@@ -53,8 +55,16 @@ BinaryFormatInfo = provider(
           "be built as, for the files that are native binaries at all.",
     fields = {
         "formats": "dict of File to format string (`pe`, `macho` or `jar`).",
+        "unsigned": "Optional. dict of File to True for the outputs the " +
+                    "producing rule's default `include`/`exclude` leave " +
+                    "unsigned. `sign` copies them through unless " +
+                    "`use_rule_defaults = False`.",
     },
 )
+
+def _unsigned_of(info):
+    # Optional, so a rule returning its own provider need not set it.
+    return getattr(info, "unsigned", None) or {}
 
 def _platform_format(ctx):
     """The native binary format of the configuration being analysed."""
@@ -121,6 +131,51 @@ def _forwarded(ctx, entry, outputs):
 
     return formats
 
+def _inherited_unsigned(ctx, entry, outputs):
+    """Unsigned outputs carried across a pass-through rule, as for formats.
+
+    Matched by `File` identity, and failing that paired in order when the
+    rule produced exactly as many files as it was given.
+    """
+    inherited = {}
+    sources = []
+    for attr_name in forwarded_attrs(entry):
+        dep = getattr(ctx.rule.attr, attr_name, None)
+        if dep == None:
+            continue
+        for target in (dep if type(dep) == "list" else [dep]):
+            if type(target) != "Target":
+                continue
+            if BinaryFormatInfo in target:
+                inherited.update(_unsigned_of(target[BinaryFormatInfo]))
+            if DefaultInfo in target:
+                sources.extend(target[DefaultInfo].files.to_list())
+    if not inherited:
+        return {}
+
+    paired = len(sources) == len(outputs)
+    unsigned = {}
+    for i in range(len(outputs)):
+        f = outputs[i]
+        if f in inherited or (paired and sources[i] in inherited):
+            unsigned[f] = True
+    return unsigned
+
+def _matches(patterns, f):
+    for pattern in patterns:
+        if glob_match(pattern, f.short_path):
+            return True
+    return False
+
+def _default_unsigned(entry, outputs):
+    """The outputs a row's own default globs leave unsigned."""
+    include, exclude = default_globs(entry)
+    return {
+        f: True
+        for f in outputs
+        if (include and not _matches(include, f)) or _matches(exclude, f)
+    }
+
 def _aspect_impl(target, ctx):
     # A rule that knows what it builds can say so directly, which is both
     # more accurate than a table row and available to rules this project has
@@ -130,13 +185,23 @@ def _aspect_impl(target, ctx):
 
     entry = lookup(ctx.rule.kind)
     if entry == None:
-        return [BinaryFormatInfo(formats = {})]
+        return [BinaryFormatInfo(formats = {}, unsigned = {})]
 
-    formats = {}
     outputs = target[DefaultInfo].files.to_list()
+    unsigned = _default_unsigned(entry, outputs)
+    if is_forward_entry(entry):
+        unsigned.update(_inherited_unsigned(ctx, entry, outputs))
+    return [BinaryFormatInfo(
+        formats = _classify(target, ctx, entry, outputs),
+        unsigned = unsigned,
+    )]
+
+def _classify(target, ctx, entry, outputs):
+    """The `File` to format mapping for a rule the table has a row for."""
+    formats = {}
 
     if is_forward_entry(entry):
-        return [BinaryFormatInfo(formats = _forwarded(ctx, entry, outputs))]
+        return _forwarded(ctx, entry, outputs)
 
     if is_not_native_entry(entry):
         # Conclusive for every output, not just the executable: a rule like
@@ -146,7 +211,7 @@ def _aspect_impl(target, ctx):
         # through to being judged by name.
         for f in outputs:
             formats[f] = NOT_NATIVE
-        return [BinaryFormatInfo(formats = formats)]
+        return formats
 
     fmt = entry.format if entry.format else _platform_format(ctx)
 
@@ -173,7 +238,7 @@ def _aspect_impl(target, ctx):
         for f in outputs:
             formats[f] = verdict if f.extension == "jar" else NOT_NATIVE
 
-    return [BinaryFormatInfo(formats = formats)]
+    return formats
 
 binary_format_aspect = aspect(
     implementation = _aspect_impl,
@@ -189,6 +254,19 @@ binary_format_aspect = aspect(
         "_macos_constraint": attr.label(default = "@platforms//os:macos"),
     },
 )
+
+def rule_default_unsigned(target):
+    """The `File`s the producing rules' default globs leave unsigned.
+
+    Args:
+        target: a Target the `binary_format_aspect` was applied to.
+
+    Returns:
+        A dict keyed by `File`; see `BinaryFormatInfo.unsigned`.
+    """
+    if BinaryFormatInfo not in target:
+        return {}
+    return _unsigned_of(target[BinaryFormatInfo])
 
 def binary_formats(target):
     """The `File` to format mapping the aspect attached to `target`.

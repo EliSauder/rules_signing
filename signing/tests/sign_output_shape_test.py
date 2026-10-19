@@ -332,7 +332,10 @@ class SignOutputShapeTest(unittest.TestCase):
         )
 
     def _publish_expectations(self, case: str, built: tuple, apphost=None) -> dict:
-        """`publish_binary`'s outputs, with the vendor's files excluded.
+        """`publish_binary`'s outputs, with the vendor's files left unsigned.
+
+        `Vendor.dll` is excluded by each target; the `runtimes/` native by
+        `publish_binary`'s default globs.
 
         The runtime identifier and the apphost's name follow the platform, so
         they are read back rather than pinned. `built` is the sidecars the
@@ -354,11 +357,12 @@ class SignOutputShapeTest(unittest.TestCase):
         name = "app.exe" if sys.platform == "win32" else "app"
         if apphost is not None:
             expected[out + name] = apphost
-        elif sys.platform == "win32":
+        elif sys.platform in ("win32", "darwin"):
+            # `publish_binary`'s row makes the apphost a native binary for
+            # the platform, so its signature is embedded.
             expected[out + name] = built
         else:
-            # No rule vouches for the apphost, and without an extension its
-            # name says nothing, so it gets cosign's detached signature.
+            # ELF has no embedded signature, so the apphost gets cosign's.
             expected[out + name] = _SIDECARS
         return expected
 
@@ -382,6 +386,19 @@ class SignOutputShapeTest(unittest.TestCase):
             if not path.endswith(("app.dll", "lib.dll")):
                 expected[path] = ()
         self.assert_outputs("publish_include", expected)
+
+    def test_rule_defaults_follow_the_files_through_a_filegroup(self) -> None:
+        """A `filegroup` forwards the rule's defaults with its files."""
+
+        self.assert_outputs("publish_group", self._publish_expectations("publish_group", ()))
+
+    def test_rule_defaults_can_be_turned_off(self) -> None:
+        """With `use_rule_defaults = False` only the target's own globs apply."""
+
+        expected = self._publish_expectations("publish_no_defaults", ())
+        native = next(p for p in expected if p.endswith("libvendor.so"))
+        expected[native] = _SIDECARS
+        self.assert_outputs("publish_no_defaults", expected)
 
 
 if __name__ == "__main__":

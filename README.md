@@ -318,6 +318,9 @@ RULE_KINDS = {
     "java_binary": jar_outputs(),        # only the `.jar`, not its launcher
     "_copy_file": forward("src"),        # bytes come from another target
     "py_binary": not_native("a bootstrap script"),
+
+    # Default globs over the rule's outputs; see "Defaults from the producing rule".
+    "_publish_binary": executable(exclude = ["**/runtimes/**"]),
 }
 ```
 
@@ -422,10 +425,7 @@ sign(
     name = "signed_publish",
     src = ":publish",  # rules_dotnet publish_binary
     certificate = ":release_cert",
-    exclude = [
-        "**/Newtonsoft.Json.dll",
-        "**/runtimes/**",
-    ],
+    exclude = ["**/Newtonsoft.Json.dll"],
 )
 ```
 
@@ -435,6 +435,19 @@ sign(
 Use these for files that sign-once can't recognise as someone else's: an
 unsigned third-party library, or a file that isn't actually the format its name
 suggests. A directory artifact is matched as a whole and not file by file.
+
+#### Defaults from the producing rule
+
+A row in the [rule table](#teaching-it-about-a-ruleset) can carry its own
+`include`/`exclude` for files that ruleset is known to bundle from elsewhere.
+They're merged with the target's own globs, and a file that either side leaves
+unsigned stays unsigned. They follow the files through `filegroup`, copies and
+other pass-through rules. Set `use_rule_defaults = False` to apply only the
+target's own globs.
+
+| Rule | Default |
+| --- | --- |
+| rules_dotnet `publish_binary` | `exclude = ["**/runtimes/**"]` (NuGet packages' native libraries) |
 
 ### Stamping
 

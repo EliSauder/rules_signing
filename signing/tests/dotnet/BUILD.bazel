@@ -37,10 +37,15 @@ publish_binary(
 
 # The checked-in vendor files are not real binaries, so these targets only
 # build because exclude or include keeps the signers away from them.
+# `csharp_binary` has no default globs, so its `runtimes/` copy needs naming.
 _VENDOR = [
     "**/Vendor.dll",
     "**/runtimes/**",
 ]
+
+# `publish_binary`'s row already leaves `runtimes/` unsigned, so only the
+# vendor's assembly is named; the native is kept away by the rule's default.
+_VENDOR_DLL = ["**/Vendor.dll"]
 
 sign(
     name = "signed_app",
@@ -53,7 +58,7 @@ sign(
     name = "signed_publish",
     src = ":publish",
     certificate = "//signing/tests:dev_cert_generic_pem",
-    exclude = _VENDOR,
+    exclude = _VENDOR_DLL,
 )
 
 # Exclusion wins over a detached signature being asked for.
@@ -62,14 +67,14 @@ sign(
     src = ":publish",
     certificate = "//signing/tests:dev_cert_generic_pem",
     detached_signatures = "always",
-    exclude = _VENDOR,
+    exclude = _VENDOR_DLL,
 )
 
 sign(
     name = "signed_publish_cosign",
     src = ":publish",
     certificate = "//signing/tests:dev_cert_generic_pem",
-    exclude = _VENDOR,
+    exclude = _VENDOR_DLL,
     tool = "cosign",
 )
 
@@ -85,6 +90,29 @@ sign(
     ],
 )
 
+# With the rule's defaults off, the native is no longer kept away: being an
+# `.so`, and a text file, it is given a detached signature.
+sign(
+    name = "signed_publish_no_defaults",
+    src = ":publish",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    exclude = _VENDOR_DLL,
+    use_rule_defaults = False,
+)
+
+# The defaults follow the files through a `filegroup`.
+filegroup(
+    name = "publish_group",
+    srcs = [":publish"],
+)
+
+sign(
+    name = "signed_publish_group",
+    src = ":publish_group",
+    certificate = "//signing/tests:dev_cert_generic_pem",
+    exclude = _VENDOR_DLL,
+)
+
 [
     file_name_manifest(
         name = "signed_{}_outputs".format(name),
@@ -96,5 +124,7 @@ sign(
         "publish_always",
         "publish_cosign",
         "publish_include",
+        "publish_no_defaults",
+        "publish_group",
     ]
 ]
