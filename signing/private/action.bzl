@@ -650,6 +650,8 @@ def rel_src_manifest(
         flatten_single_directory: when a lone directory artifact is signed,
             write its contents at the root of the output directory instead of
             nesting them under the directory's own name. Defaults to doing so.
+            Otherwise every source is written at its path relative to the
+            package of the label that produced it.
         signers: optional dict keyed by source path, naming the signer whose
             outputs the caller has already declared for that source. Recorded
             as a third manifest field so the action cannot produce a different
@@ -663,7 +665,7 @@ def rel_src_manifest(
 
     lines = []
     for f in srcs:
-        relpath = "" if flatten_single_directory and f.is_directory else f.short_path
+        relpath = "" if flatten_single_directory and f.is_directory else _output_relpath(f)
         signer = signers.get(f.path, "") if signers else ""
         lines.append("{}\t{}\t{}".format(relpath, f.path, signer))
 
@@ -674,16 +676,21 @@ def rel_src_manifest(
     return out
 
 def _output_relpath(src):
-    """The path `src` keeps inside the output, as a valid declared-file name.
+    """The path `src` keeps inside the output.
 
-    `short_path` spells a file from another repository as `../repo/...`, which
-    `declare_file` rejects because it escapes the target's own output
-    directory. Everything else is already relative and is kept verbatim so the
-    output mirrors the source layout.
+    The repository and package of the label that produced `src` say where
+    Bazel put it, not anything about the artifact, so they are dropped and
+    the rest of its path is kept. `//my/pkg:t` producing
+    `my/pkg/mydir/myfile.json` is written as `mydir/myfile.json`.
     """
-    if src.short_path.startswith("../"):
-        return "external/" + src.short_path[len("../"):]
-    return src.short_path
+    path = src.short_path
+    if path.startswith("../"):
+        # Another repository's file: `../<repo>/<package>/...`.
+        path = path.split("/", 2)[2] if path.count("/") >= 2 else src.basename
+    package = src.owner.package if src.owner else ""
+    if package and path.startswith(package + "/"):
+        path = path[len(package) + 1:]
+    return path
 
 def signed_outputs(
         ctx,
@@ -697,8 +704,9 @@ def signed_outputs(
     """Declares one output artifact per source, plus cosign's sidecar files.
 
     Every source keeps its own shape: a file is signed into a file and a
-    directory into a directory, both under their source-relative path, rather
-    than the whole target collapsing into one output tree. Sources routed to
+    directory into a directory, both at their path relative to the package of
+    the label that produced them, rather than the whole target collapsing
+    into one output tree. Sources routed to
     cosign additionally get the `.sig` and `.bundle.json` files that a
     detached signature consists of.
 
@@ -744,7 +752,8 @@ def signed_outputs(
           it, to pass to `rel_src_manifest`.
         * `out_dir`: the path the action writes the tree under.
         * `flatten_single_directory`: what `rel_src_manifest` must be told so
-          its relpaths line up with these outputs.
+          its relpaths line up with these outputs. Always False: a directory
+          keeps its own name even when it is the only source.
         * `require_detached_signatures`: whether sidecar files were declared
           and so have to be produced.
     """
@@ -756,10 +765,6 @@ def signed_outputs(
         )
     )
     name = out_name if out_name else "{}.signed".format(ctx.label.name)
-
-    # A lone directory is the whole output, so its contents sit at the root
-    # rather than nested under a copy of the directory's own name.
-    flatten = len(srcs) == 1 and srcs[0].is_directory
 
     # Signing material that does not exist is not an error: files are copied
     # through unsigned so a contributor without a key can still build (see the
@@ -816,7 +821,7 @@ def signed_outputs(
             # what a tree artifact exists for. Nothing about it is declared
             # per file, so the per-source signer is not pinned either.
             claim(relpath, src, "")
-            out = ctx.actions.declare_directory(name if flatten else name + "/" + relpath)
+            out = ctx.actions.declare_directory(name + "/" + relpath)
             files.append(out)
             signed.append(out)
             continue
@@ -849,7 +854,7 @@ def signed_outputs(
         signed = signed,
         signers = signers,
         out_dir = _out_dir_path(ctx, name),
-        flatten_single_directory = flatten,
+        flatten_single_directory = False,
         require_detached_signatures = require_detached,
     )
 

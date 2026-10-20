@@ -64,10 +64,12 @@ def _sign_impl(ctx):
 
 sign = rule(
     implementation = _sign_impl,
-    doc = "Signs all files from `src`, preserving relative output structure. " +
-          "Each source keeps its own shape: a file is signed into a file and " +
-          "a directory into a directory, both under their source-relative " +
-          "path. Sources signed with a detached signature (cosign) are " +
+    doc = "Signs all files from `src`. Each source keeps its own shape: a " +
+          "file is signed into a file and a directory into a directory, both " +
+          "at their path relative to the package of the label that produced " +
+          "them (`//my/pkg:t`'s `my/pkg/mydir/f.json` becomes " +
+          "`mydir/f.json`). Sources signed with a detached " +
+          "signature (cosign) are " +
           "accompanied by their `.sig` and `.bundle.json` files, which " +
           "`detached_signatures` can extend to every source or turn off " +
           "entirely.",

@@ -96,8 +96,17 @@ def _canonical(name: str) -> str:
 
 
 def _expected_names() -> "list[str]":
+    # The manifest records source short_paths; `sign` writes each one relative
+    # to the package that built it, which for these fixtures is this one.
+    package = "signing/tests/"
     text = _rlocation(_ARGS.names_manifest).read_text(encoding="utf-8")
-    return [_canonical(line) for line in text.split("\n") if line]
+    names = []
+    for line in text.split("\n"):
+        if not line:
+            continue
+        assert line.startswith(package), f"{line} is not under {package}"
+        names.append(_canonical(line[len(package):]))
+    return names
 
 
 def _rel_files(manifest_rootpath: str, prefix: str) -> "dict[str, pathlib.Path]":

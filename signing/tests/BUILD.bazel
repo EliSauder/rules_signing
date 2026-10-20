@@ -556,7 +556,7 @@ sign(
 pick_file(
     name = "signed_always_detached_exe",
     src = ":signed_always_detached",
-    suffix = "signing/tests/hello.exe",
+    suffix = ".signed/hello.exe",
 )
 
 pick_file(
@@ -568,7 +568,7 @@ pick_file(
 pick_file(
     name = "signed_never_detached_exe",
     src = ":signed_never_detached",
-    suffix = "signing/tests/hello.exe",
+    suffix = ".signed/hello.exe",
 )
 
 sign(
@@ -812,7 +812,7 @@ py_test(
 pick_file(
     name = "signed_real_pe_detected_binary",
     src = ":signed_real_pe_detected",
-    suffix = "signing/tests/hello_pe",
+    suffix = ".signed/hello_pe",
 )
 
 pick_file(
@@ -866,9 +866,7 @@ py_test(
         "--description='" + SIGNED_DESCRIPTION + "'",
         "--url=" + SIGNED_URL,
         "--identity=dev.rules-signing.hello",
-        # Paths inside a signed tree mirror the source's own layout, except
-        # when the whole tree is a single directory artifact, which is
-        # flattened to the root of the output.
+        # Paths inside a signed tree mirror the source directory's own layout.
         "--pe=$(rootpath :signed_real_pe_pem)",
         "--pe=$(rootpath :signed_real_pe_p12)",
         "--pe=$(rootpath :signed_real_pe_base64)",

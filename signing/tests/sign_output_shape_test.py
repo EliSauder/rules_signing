@@ -152,7 +152,7 @@ class SignOutputShapeTest(unittest.TestCase):
         """A PE is signed in place, so the signed file is the whole output."""
 
         self.assert_outputs(
-            "pe", {"signing/tests/hello.exe": ()}
+            "pe", {"hello.exe": ()}
         )
 
     def test_detached_signature_brings_its_sidecar_files(self) -> None:
@@ -161,8 +161,8 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assert_outputs(
             "blobs",
             {
-                "signing/tests/testdata_sign/docs/readme.txt": _SIDECARS,
-                "signing/tests/testdata_sign/docs/nested/guide.txt": _SIDECARS,
+                "testdata_sign/docs/readme.txt": _SIDECARS,
+                "testdata_sign/docs/nested/guide.txt": _SIDECARS,
             },
         )
 
@@ -177,7 +177,7 @@ class SignOutputShapeTest(unittest.TestCase):
         establish that.
         """
 
-        self.assert_outputs("detected", {"signing/tests/hello_pe": ()})
+        self.assert_outputs("detected", {"hello_pe": ()})
 
     def test_detection_reaches_one_file_in_a_group_and_not_its_neighbour(
         self,
@@ -195,8 +195,8 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assert_outputs(
             "mixed_group",
             {
-                "signing/tests/hello_pe": (),
-                "signing/tests/testdata_sign/docs/nested/guide.txt": _SIDECARS,
+                "hello_pe": (),
+                "testdata_sign/docs/nested/guide.txt": _SIDECARS,
             },
         )
 
@@ -249,7 +249,7 @@ class SignOutputShapeTest(unittest.TestCase):
 
         self.assert_outputs(
             "elf_named_exe",
-            {"signing/tests/elf_named_exe.exe": _SIDECARS},
+            {"elf_named_exe.exe": _SIDECARS},
         )
 
     def test_without_signing_material_only_the_sources_come_back(self) -> None:
@@ -258,10 +258,10 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assert_outputs(
             "unsigned",
             {
-                "signing/tests/testdata_sign/bin/app.exe": (),
-                "signing/tests/testdata_sign/bin/plugins/helper.dll": (),
-                "signing/tests/testdata_sign/docs/readme.txt": (),
-                "signing/tests/testdata_sign/docs/nested/guide.txt": (),
+                "testdata_sign/bin/app.exe": (),
+                "testdata_sign/bin/plugins/helper.dll": (),
+                "testdata_sign/docs/readme.txt": (),
+                "testdata_sign/docs/nested/guide.txt": (),
             },
         )
 
@@ -278,8 +278,8 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assert_outputs(
             "always",
             {
-                "signing/tests/hello.exe": _SIDECARS,
-                "signing/tests/testdata_sign/docs/readme.txt": _SIDECARS,
+                "hello.exe": _SIDECARS,
+                "testdata_sign/docs/readme.txt": _SIDECARS,
             },
         )
 
@@ -293,8 +293,8 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assert_outputs(
             "never",
             {
-                "signing/tests/hello.exe": (),
-                "signing/tests/testdata_sign/docs/readme.txt": (),
+                "hello.exe": (),
+                "testdata_sign/docs/readme.txt": (),
             },
         )
 
@@ -321,7 +321,7 @@ class SignOutputShapeTest(unittest.TestCase):
         either.
         """
 
-        out = "signing/tests/dotnet/app/net9.0/"
+        out = "app/net9.0/"
         self.assert_outputs(
             "app",
             {
@@ -343,7 +343,7 @@ class SignOutputShapeTest(unittest.TestCase):
         apphost's expectation.
         """
 
-        prefix = "signing/tests/dotnet/publish/publish/"
+        prefix = "publish/publish/"
         (rid,) = {rel[len(prefix):].split("/")[0] for rel in _outputs(case)}
         out = prefix + rid + "/"
         expected = {

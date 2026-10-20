@@ -5,9 +5,10 @@
 ## What works now
 
 - Wrap any target that exposes `DefaultInfo.files`.
-- Preserve source output layout (relative paths), with one output artifact per
-  source: a file is signed into a file, a directory into a directory. Only a
-  detached signature adds files, and only the ones it consists of.
+- Write each output at its path relative to the package of the label that
+  produced it, with one output artifact per source: a file is signed into a
+  file, a directory into a directory. Only a detached signature adds files,
+  and only the ones it consists of.
 - Auto-select signer from the file's extension, or from the rule that produces it:
   - `osslsigncode`: `.exe`, `.dll`, `.msi`, `.sys`, and related Windows script/package extensions.
   - `codesign`: `.app`, `.pkg`, `.dmg`.
@@ -248,8 +249,14 @@ sign(
 ### What a `sign` target produces
 
 Each source keeps its own shape. A file is signed into a **file**, a directory
-into a **directory artifact**, both under the same relative path the wrapped
-target used, below `<name>.signed/` (or the `out` you name). The directory
+into a **directory artifact**, below `<name>.signed/` (or the `out` you name)
+at its path relative to the package of the label that produced it. The
+repository and package are not repeated: `//my/pkg:t` producing
+`my/pkg/mydir/myfile.json` becomes `<name>.signed/mydir/myfile.json`, and a
+directory `my/pkg/helloworld/` becomes `<name>.signed/helloworld/`, with
+everything inside it at the same relative path as in the source. Two sources
+that would land on the same path fail the build rather than overwrite each
+other. The directory
 itself is not an output; the files inside it are. So a target wrapping one
 `.exe` is that one signed `.exe`, and nothing else has to be unpacked to get
 at it.

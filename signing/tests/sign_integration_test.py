@@ -65,6 +65,10 @@ SRC_FILE_ROOTPATHS = _ARGS.src_file_rootpaths
 
 _RUNFILES = runfiles.Create()
 
+# Every fixture is built in this package, which `sign` leaves out of each
+# output's path.
+_PACKAGE = "signing/tests/"
+
 
 def _rlocation(rootpath: str) -> pathlib.Path:
     path = _RUNFILES.Rlocation("rules_signing/" + rootpath)
@@ -134,12 +138,12 @@ class SignIntegrationTest(unittest.TestCase):
 
             outputs = _declared_outputs(case)
 
-            # Each source is signed into its own file, under the path it had
-            # in the source. None of these fixtures has resolvable signing
-            # material, so no detached signature is declared beside them and
-            # the outputs are exactly the inputs.
+            # Each source is signed into its own file, at its path relative to
+            # the package that built it. None of these fixtures has resolvable
+            # signing material, so no detached signature is declared beside
+            # them and the outputs are exactly the inputs.
             self.assertEqual(
-                set(outputs.values()),
+                {_PACKAGE + rel for rel in outputs.values()},
                 set(src_rootpaths),
                 f"declared outputs mismatch for {case.manifest_rootpath} "
                 f"(input {case.src_root_rootpath})",
@@ -150,11 +154,11 @@ class SignIntegrationTest(unittest.TestCase):
                 self.assertTrue(path.is_file(), f"expected an output file: {path}")
                 self.assertEqual(
                     path.read_text(encoding="utf-8"),
-                    _rlocation(rel).read_text(encoding="utf-8"),
+                    _rlocation(_PACKAGE + rel).read_text(encoding="utf-8"),
                     f"content mismatch: {rel}",
                 )
 
-    def test_mixed_content_directory_is_flattened_and_fully_preserved(self) -> None:
+    def test_mixed_content_directory_is_fully_preserved(self) -> None:
         self.assertGreater(len(MIXED_TREES), 0, "missing mixed tree runfile args")
 
         expected = {
@@ -170,8 +174,8 @@ class SignIntegrationTest(unittest.TestCase):
             tree = _signed_tree_dir(rel_tree)
             self.assertTrue(tree.is_dir(), f"expected output tree directory: {tree}")
 
-            # A lone directory input is flattened, so the layout is preserved
-            # at the output root rather than nested under the input name.
+            # A directory source is signed into a directory of its own, whose
+            # contents keep exactly the layout they had in the source.
             self.assertEqual(
                 _collect_rel_files(tree),
                 set(expected),
