@@ -314,6 +314,13 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assertIn("readme.txt.sig", names)
         self.assertIn("readme.txt.bundle.json", names)
 
+    def test_another_repositorys_files_drop_its_repository_and_package(
+        self,
+    ) -> None:
+        """`@repo//lib:paths.bzl` is written as `paths.bzl`."""
+
+        self.assert_outputs("external", {"LICENSE": (), "paths.bzl": ()})
+
     def test_a_lone_directory_can_opt_in_to_being_flattened(self) -> None:
         """`flatten_single_directory` makes the output directory the tree."""
 

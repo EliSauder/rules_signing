@@ -996,6 +996,27 @@ file_name_manifest(
     srcs = [":signed_real_blob_tree"],
 )
 
+# Files from another repository, in its root package and in a subpackage. Their
+# repository and package are left out of the output paths just like this one's.
+filegroup(
+    name = "external_files",
+    srcs = [
+        "@bazel_skylib//:LICENSE",
+        "@bazel_skylib//lib:paths",
+    ],
+)
+
+sign(
+    name = "signed_external_files",
+    src = ":external_files",
+    detached_signatures = "never",
+)
+
+file_name_manifest(
+    name = "signed_external_files_outputs",
+    srcs = [":signed_external_files"],
+)
+
 # The same lone directory, opted in to being flattened into the output root.
 sign(
     name = "signed_flat_blob_tree",
@@ -1049,6 +1070,8 @@ py_test(
         "signing/tests/signed_real_blob_tree.signed",
         "--case=flat_tree::$(rootpath :signed_flat_blob_tree_outputs)::" +
         "signing/tests",
+        "--case=external::$(rootpath :signed_external_files_outputs)::" +
+        "signing/tests/signed_external_files.signed",
         "--case=always::$(rootpath :signed_always_detached_outputs)::" +
         "signing/tests/signed_always_detached.signed",
         "--case=never::$(rootpath :signed_never_detached_outputs)::" +
@@ -1079,6 +1102,8 @@ py_test(
         ":signed_real_blob_tree_outputs",
         ":signed_flat_blob_tree",
         ":signed_flat_blob_tree_outputs",
+        ":signed_external_files",
+        ":signed_external_files_outputs",
         ":signed_elf_named_exe",
         ":signed_elf_named_exe_outputs",
         ":signed_kotlin_greeting",

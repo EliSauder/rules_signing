@@ -685,15 +685,29 @@ def _output_relpath(src):
     Bazel put it, not anything about the artifact, so they are dropped and
     the rest of its path is kept. `//my/pkg:t` producing
     `my/pkg/mydir/myfile.json` is written as `mydir/myfile.json`.
+
+    The package's directory is assembled from Bazel's own description of
+    where the file lives -- its root, and its owner's repository and package
+    -- rather than by recognising patterns in the path, and a file that is
+    not under it fails the build rather than being given a guessed path.
     """
-    path = src.short_path
-    if path.startswith("../"):
-        # Another repository's file: `../<repo>/<package>/...`.
-        path = path.split("/", 2)[2] if path.count("/") >= 2 else src.basename
-    package = src.owner.package if src.owner else ""
-    if package and path.startswith(package + "/"):
-        path = path[len(package) + 1:]
-    return path
+    if src.owner == None:
+        fail("rules_signing: {} has no owning label, so its package is unknown".format(src.path))
+    package_dir = "/".join([
+        part
+        for part in (src.root.path, src.owner.workspace_root, src.owner.package)
+        if part
+    ])
+    prefix = package_dir + "/" if package_dir else ""
+    if not src.path.startswith(prefix):
+        fail(
+            "rules_signing: {} is not under {}, the directory of the package {} that produced it".format(
+                src.path,
+                package_dir,
+                src.owner,
+            ),
+        )
+    return src.path[len(prefix):]
 
 def signed_outputs(
         ctx,
