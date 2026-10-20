@@ -302,8 +302,9 @@ class SignOutputShapeTest(unittest.TestCase):
         """Its contents are the action's to decide, so it is a tree artifact."""
 
         outputs = _outputs("tree")
-        self.assertEqual(len(outputs), 1, f"expected one output: {outputs}")
-        (path,) = outputs.values()
+        # It keeps its own name even though it is the only source.
+        self.assertEqual(list(outputs), ["blob_tree"])
+        path = outputs["blob_tree"]
         self.assertTrue(path.is_dir(), f"expected a directory output: {path}")
 
         # The detached signatures live inside it, where they did not have to
@@ -312,6 +313,16 @@ class SignOutputShapeTest(unittest.TestCase):
         self.assertIn("readme.txt", names)
         self.assertIn("readme.txt.sig", names)
         self.assertIn("readme.txt.bundle.json", names)
+
+    def test_a_lone_directory_can_opt_in_to_being_flattened(self) -> None:
+        """`flatten_single_directory` makes the output directory the tree."""
+
+        outputs = _outputs("flat_tree")
+        self.assertEqual(list(outputs), ["signed_flat_blob_tree.signed"])
+        path = outputs["signed_flat_blob_tree.signed"]
+        self.assertTrue(path.is_dir(), f"expected a directory output: {path}")
+        self.assertTrue((path / "docs" / "readme.txt").is_file())
+        self.assertTrue((path / "config.yaml").is_file())
 
     def test_excluded_files_pass_through_a_dotnet_binary(self) -> None:
         """The compiled assembly is signed in place; excluded files are not.

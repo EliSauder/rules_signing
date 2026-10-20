@@ -261,6 +261,11 @@ itself is not an output; the files inside it are. So a target wrapping one
 `.exe` is that one signed `.exe`, and nothing else has to be unpacked to get
 at it.
 
+When the only source is a directory, set `flatten_single_directory = True` to
+put its contents directly in `<name>.signed/` instead of in
+`<name>.signed/helloworld/`. The output directory is then itself the one
+output. Flattening is off by default.
+
 Signing with a detached signature adds files, because that is what such a
 signature is: a source signed with `cosign sign-blob` is accompanied by its
 `.sig` and `.bundle.json`, beside the original. A source signed natively

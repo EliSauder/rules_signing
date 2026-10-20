@@ -996,6 +996,18 @@ file_name_manifest(
     srcs = [":signed_real_blob_tree"],
 )
 
+# The same lone directory, opted in to being flattened into the output root.
+sign(
+    name = "signed_flat_blob_tree",
+    src = ":blob_tree",
+    flatten_single_directory = True,
+)
+
+file_name_manifest(
+    name = "signed_flat_blob_tree_outputs",
+    srcs = [":signed_flat_blob_tree"],
+)
+
 file_name_manifest(
     name = "signed_always_detached_outputs",
     srcs = [":signed_always_detached"],
@@ -1034,6 +1046,8 @@ py_test(
         "--case=unsigned::$(rootpath :signed_default_outputs)::" +
         "signing/tests/signed_default.signed",
         "--case=tree::$(rootpath :signed_real_blob_tree_outputs)::" +
+        "signing/tests/signed_real_blob_tree.signed",
+        "--case=flat_tree::$(rootpath :signed_flat_blob_tree_outputs)::" +
         "signing/tests",
         "--case=always::$(rootpath :signed_always_detached_outputs)::" +
         "signing/tests/signed_always_detached.signed",
@@ -1063,6 +1077,8 @@ py_test(
         ":signed_never_detached_outputs",
         ":signed_real_blob_tree",
         ":signed_real_blob_tree_outputs",
+        ":signed_flat_blob_tree",
+        ":signed_flat_blob_tree_outputs",
         ":signed_elf_named_exe",
         ":signed_elf_named_exe_outputs",
         ":signed_kotlin_greeting",

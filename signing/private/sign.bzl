@@ -44,6 +44,7 @@ def _sign_impl(ctx):
         formats = formats,
         attr_prefix = "",
         unsigned = unsigned,
+        flatten_single_directory = ctx.attr.flatten_single_directory,
     )
 
     if srcs:
@@ -84,7 +85,16 @@ sign = rule(
             doc = "Optional name of the directory the signed outputs are " +
                   "placed under, relative to the package. Defaults to " +
                   "`<name>.signed`. The directory itself is not an output; " +
-                  "the files inside it are.",
+                  "the files inside it are, unless " +
+                  "`flatten_single_directory` makes it one.",
+        ),
+        "flatten_single_directory": attr.bool(
+            default = False,
+            doc = "When `src` provides exactly one file and it is a " +
+                  "directory, make the output directory (`<name>.signed`, or " +
+                  "`out`) that directory's signed copy, so its contents sit " +
+                  "at the root rather than under the directory's own name. " +
+                  "The output directory is then itself the one output.",
         ),
         "include": attr.string_list(
             doc = "Globs over source paths (`short_path`, `**` crossing " +
