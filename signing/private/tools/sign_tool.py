@@ -547,7 +547,26 @@ def passthrough(src: str, out: str) -> None:
         # preserving them would leave the output tree pointing at paths that do
         # not outlive the action.
         shutil.copytree(src, out, symlinks=False)
-        for root, dirs, files in os.walk(out):
+        make_writable(out)
+        return
+    ensure_parent(out)
+    shutil.copy2(src, out)
+    make_writable(out)
+
+
+def make_writable(path: str) -> None:
+    """Grants the owner write access to `path` and, for a directory, its contents.
+
+    Signers can copy the read-only permissions Bazel gives action inputs onto
+    what they write, and Windows refuses to delete or replace a read-only
+    file.
+    """
+
+    top = pathlib.Path(path)
+    if top.is_symlink():
+        return
+    if top.is_dir():
+        for root, dirs, files in os.walk(path):
             for dname in dirs:
                 dpath = pathlib.Path(root) / dname
                 dpath.chmod(dpath.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
@@ -555,13 +574,9 @@ def passthrough(src: str, out: str) -> None:
                 fpath = pathlib.Path(root) / fname
                 if not fpath.is_symlink():
                     fpath.chmod(fpath.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR)
-        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
-        return
-    ensure_parent(out)
-    shutil.copy2(src, out)
-    out_path = pathlib.Path(out)
-    if not out_path.is_symlink():
-        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR)
+        top.chmod(top.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
+    else:
+        top.chmod(top.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR)
 
 
 def render_cert_material(
@@ -1401,6 +1416,9 @@ def sign_staged(*, outfile: str, tmpdir: str, **kwargs) -> None:
         )
         out_parent = pathlib.Path(outfile).parent
         for produced in stage.iterdir():
+            # Moving to another drive copies and then deletes, which Windows
+            # refuses for the read-only files some signers write.
+            make_writable(str(produced))
             replace_path(str(produced), str(out_parent / produced.name))
     finally:
         shutil.rmtree(stage, ignore_errors=True)

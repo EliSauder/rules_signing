@@ -1672,6 +1672,10 @@ class SignToolUnitTest(unittest.TestCase):
                 seen.append(outfile)
                 pathlib.Path(outfile).write_bytes(b"MZ-signed")
                 pathlib.Path(outfile + ".sig").write_text("sig\n", encoding="utf-8")
+                # rcodesign copies the read-only mode of Bazel's inputs onto its
+                # output, which Windows then refuses to delete after a move
+                # across drives copies it.
+                os.chmod(outfile, stat.S_IRUSR)
 
             with mock.patch.object(sign_tool, "sign_one", side_effect=fake_sign_one):
                 sign_tool.sign_staged(
@@ -1692,6 +1696,7 @@ class SignToolUnitTest(unittest.TestCase):
             self.assertLess(len(seen[0]), len(str(outfile)))
             final = pathlib.Path(sign_tool.long_path(str(outfile)))
             self.assertEqual(final.read_bytes(), b"MZ-signed")
+            self.assertTrue(final.stat().st_mode & stat.S_IWUSR)
             self.assertEqual(
                 pathlib.Path(sign_tool.long_path(str(outfile) + ".sig")).read_text(encoding="utf-8"),
                 "sig\n",
