@@ -44,6 +44,7 @@ def _sign_impl(ctx):
         formats = formats,
         attr_prefix = "",
         unsigned = unsigned,
+        flatten_single_directory = ctx.attr.flatten_single_directory,
     )
 
     if srcs:
@@ -64,10 +65,12 @@ def _sign_impl(ctx):
 
 sign = rule(
     implementation = _sign_impl,
-    doc = "Signs all files from `src`, preserving relative output structure. " +
-          "Each source keeps its own shape: a file is signed into a file and " +
-          "a directory into a directory, both under their source-relative " +
-          "path. Sources signed with a detached signature (cosign) are " +
+    doc = "Signs all files from `src`. Each source keeps its own shape: a " +
+          "file is signed into a file and a directory into a directory, both " +
+          "at their path relative to the package of the label that produced " +
+          "them (`//my/pkg:t`'s `my/pkg/mydir/f.json` becomes " +
+          "`mydir/f.json`). Sources signed with a detached " +
+          "signature (cosign) are " +
           "accompanied by their `.sig` and `.bundle.json` files, which " +
           "`detached_signatures` can extend to every source or turn off " +
           "entirely.",
@@ -82,7 +85,16 @@ sign = rule(
             doc = "Optional name of the directory the signed outputs are " +
                   "placed under, relative to the package. Defaults to " +
                   "`<name>.signed`. The directory itself is not an output; " +
-                  "the files inside it are.",
+                  "the files inside it are, unless " +
+                  "`flatten_single_directory` makes it one.",
+        ),
+        "flatten_single_directory": attr.bool(
+            default = False,
+            doc = "When `src` provides exactly one file and it is a " +
+                  "directory, make the output directory (`<name>.signed`, or " +
+                  "`out`) that directory's signed copy, so its contents sit " +
+                  "at the root rather than under the directory's own name. " +
+                  "The output directory is then itself the one output.",
         ),
         "include": attr.string_list(
             doc = "Globs over source paths (`short_path`, `**` crossing " +

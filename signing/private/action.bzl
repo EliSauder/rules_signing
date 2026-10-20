@@ -631,7 +631,7 @@ def rel_src_manifest(
         ctx,
         srcs,
         name = None,
-        flatten_single_directory = None,
+        flatten_single_directory = False,
         signers = None):
     """Writes the manifest that pairs each source with its output-relative path.
 
@@ -647,9 +647,11 @@ def rel_src_manifest(
         ctx: the rule context.
         srcs: the Files to sign.
         name: base name for the manifest file; defaults to the target name.
-        flatten_single_directory: when a lone directory artifact is signed,
-            write its contents at the root of the output directory instead of
-            nesting them under the directory's own name. Defaults to doing so.
+        flatten_single_directory: when the only source is a directory
+            artifact, write its contents at the root of the output directory
+            instead of nesting them under the directory's own name. Off by
+            default: every source is written at its path relative to the
+            package of the label that produced it.
         signers: optional dict keyed by source path, naming the signer whose
             outputs the caller has already declared for that source. Recorded
             as a third manifest field so the action cannot produce a different
@@ -658,12 +660,11 @@ def rel_src_manifest(
     Returns:
         The manifest `File`.
     """
-    if flatten_single_directory == None:
-        flatten_single_directory = len(srcs) == 1 and srcs[0].is_directory
+    flatten_single_directory = _flattens(srcs, flatten_single_directory)
 
     lines = []
     for f in srcs:
-        relpath = "" if flatten_single_directory and f.is_directory else f.short_path
+        relpath = "" if flatten_single_directory and f.is_directory else _output_relpath(f)
         signer = signers.get(f.path, "") if signers else ""
         lines.append("{}\t{}\t{}".format(relpath, f.path, signer))
 
@@ -673,17 +674,40 @@ def rel_src_manifest(
     ctx.actions.write(out, "".join([l + "\n" for l in lines]))
     return out
 
-def _output_relpath(src):
-    """The path `src` keeps inside the output, as a valid declared-file name.
+def _flattens(srcs, flatten_single_directory):
+    """Whether `srcs` is a lone directory that was asked to be flattened."""
+    return flatten_single_directory and len(srcs) == 1 and srcs[0].is_directory
 
-    `short_path` spells a file from another repository as `../repo/...`, which
-    `declare_file` rejects because it escapes the target's own output
-    directory. Everything else is already relative and is kept verbatim so the
-    output mirrors the source layout.
+def _output_relpath(src):
+    """The path `src` keeps inside the output.
+
+    The repository and package of the label that produced `src` say where
+    Bazel put it, not anything about the artifact, so they are dropped and
+    the rest of its path is kept. `//my/pkg:t` producing
+    `my/pkg/mydir/myfile.json` is written as `mydir/myfile.json`.
+
+    The package's directory is assembled from Bazel's own description of
+    where the file lives -- its root, and its owner's repository and package
+    -- rather than by recognising patterns in the path, and a file that is
+    not under it fails the build rather than being given a guessed path.
     """
-    if src.short_path.startswith("../"):
-        return "external/" + src.short_path[len("../"):]
-    return src.short_path
+    if src.owner == None:
+        fail("rules_signing: {} has no owning label, so its package is unknown".format(src.path))
+    package_dir = "/".join([
+        part
+        for part in (src.root.path, src.owner.workspace_root, src.owner.package)
+        if part
+    ])
+    prefix = package_dir + "/" if package_dir else ""
+    if not src.path.startswith(prefix):
+        fail(
+            "rules_signing: {} is not under {}, the directory of the package {} that produced it".format(
+                src.path,
+                package_dir,
+                src.owner,
+            ),
+        )
+    return src.path[len(prefix):]
 
 def signed_outputs(
         ctx,
@@ -693,12 +717,14 @@ def signed_outputs(
         detached_signatures = None,
         formats = {},
         attr_prefix = "signing_",
-        unsigned = []):
+        unsigned = [],
+        flatten_single_directory = False):
     """Declares one output artifact per source, plus cosign's sidecar files.
 
     Every source keeps its own shape: a file is signed into a file and a
-    directory into a directory, both under their source-relative path, rather
-    than the whole target collapsing into one output tree. Sources routed to
+    directory into a directory, both at their path relative to the package of
+    the label that produced them, rather than the whole target collapsing
+    into one output tree. Sources routed to
     cosign additionally get the `.sig` and `.bundle.json` files that a
     detached signature consists of.
 
@@ -733,6 +759,10 @@ def signed_outputs(
         attr_prefix: the prefix the signing attributes were declared with.
         unsigned: sources to copy through with no signature of any kind,
             whatever `tool` and `detached_signatures` say.
+        flatten_single_directory: when the only source is a directory
+            artifact, make the output directory itself that directory's
+            signed copy, instead of nesting it under its own name. Off by
+            default.
 
     Returns:
         A struct with:
@@ -744,7 +774,8 @@ def signed_outputs(
           it, to pass to `rel_src_manifest`.
         * `out_dir`: the path the action writes the tree under.
         * `flatten_single_directory`: what `rel_src_manifest` must be told so
-          its relpaths line up with these outputs.
+          its relpaths line up with these outputs: whether a lone directory
+          was flattened.
         * `require_detached_signatures`: whether sidecar files were declared
           and so have to be produced.
     """
@@ -756,10 +787,7 @@ def signed_outputs(
         )
     )
     name = out_name if out_name else "{}.signed".format(ctx.label.name)
-
-    # A lone directory is the whole output, so its contents sit at the root
-    # rather than nested under a copy of the directory's own name.
-    flatten = len(srcs) == 1 and srcs[0].is_directory
+    flatten = _flattens(srcs, flatten_single_directory)
 
     # Signing material that does not exist is not an error: files are copied
     # through unsigned so a contributor without a key can still build (see the
@@ -878,6 +906,7 @@ def sign_action(
         mnemonic = "SignTree",
         progress_message = None,
         attr_prefix = "signing_",
+        flatten_single_directory = False,
         **kwargs):
     """Registers an action signing `srcs`, keeping their relative layout.
 
@@ -902,6 +931,10 @@ def sign_action(
         progress_message: action progress message.
         attr_prefix: the prefix the signing attributes were declared with.
             Ignored when `sctx` is supplied.
+        flatten_single_directory: with `out_dir`, when the only source is a
+            directory artifact, write its contents at the root of `out_dir`
+            instead of under the directory's own name. Off by default. With
+            `outs`, pass it to `signed_outputs` instead.
         **kwargs: forwarded to `ctx.actions.run`.
 
     Returns:
@@ -938,7 +971,11 @@ def sign_action(
         )
         outputs = outs.files
     else:
-        manifest = rel_src_manifest(ctx, srcs)
+        manifest = rel_src_manifest(
+            ctx,
+            srcs,
+            flatten_single_directory = flatten_single_directory,
+        )
         argv = signing_argv(
             sctx,
             rel_src_manifest = manifest,

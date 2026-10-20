@@ -5,9 +5,10 @@
 ## What works now
 
 - Wrap any target that exposes `DefaultInfo.files`.
-- Preserve source output layout (relative paths), with one output artifact per
-  source: a file is signed into a file, a directory into a directory. Only a
-  detached signature adds files, and only the ones it consists of.
+- Write each output at its path relative to the package of the label that
+  produced it, with one output artifact per source: a file is signed into a
+  file, a directory into a directory. Only a detached signature adds files,
+  and only the ones it consists of.
 - Auto-select signer from the file's extension, or from the rule that produces it:
   - `osslsigncode`: `.exe`, `.dll`, `.msi`, `.sys`, and related Windows script/package extensions.
   - `codesign`: `.app`, `.pkg`, `.dmg`.
@@ -248,11 +249,41 @@ sign(
 ### What a `sign` target produces
 
 Each source keeps its own shape. A file is signed into a **file**, a directory
-into a **directory artifact**, both under the same relative path the wrapped
-target used, below `<name>.signed/` (or the `out` you name). The directory
+into a **directory artifact**, below `<name>.signed/` (or the `out` you name)
+at its path relative to the package of the label that produced it. The
+repository and package are not repeated: `//my/pkg:t` producing
+`my/pkg/mydir/myfile.json` becomes `<name>.signed/mydir/myfile.json`, and a
+directory `my/pkg/helloworld/` becomes `<name>.signed/helloworld/`, with
+everything inside it at the same relative path as in the source. Two sources
+that would land on the same path fail the build rather than overwrite each
+other. The directory
 itself is not an output; the files inside it are. So a target wrapping one
 `.exe` is that one signed `.exe`, and nothing else has to be unpacked to get
 at it.
+
+When the only source is a directory, set `flatten_single_directory = True` to
+put its contents directly in `<name>.signed/` instead of in
+`<name>.signed/helloworld/`. The output directory is then itself the one
+output. Flattening is off by default.
+
+How each kind of source maps to an output path, for a target `sign(name = "s",
+...)` in any package (sidecar files from detached signatures are covered
+below):
+
+| Scenario | Source (produced by) | Output |
+| --- | --- | --- |
+| File at the root of its package | `my/pkg/app.exe` (`//my/pkg:app`) | `s.signed/app.exe` |
+| File in a subdirectory of its package | `my/pkg/mydir/myfile.json` (`//my/pkg:t`) | `s.signed/mydir/myfile.json` |
+| Tool-generated layout | `services/X/X_publish/publish/win-x64/X.exe` (`//services/X:X_publish`) | `s.signed/X_publish/publish/win-x64/X.exe` |
+| Files from several packages | `a/x.txt` (`//a:x.txt`), `b/y.txt` (`//b:y.txt`) | `s.signed/x.txt`, `s.signed/y.txt` |
+| File gathered by a `filegroup` in another package | `my/pkg/sub/f.txt` (`//my/pkg/sub:f.txt`) | `s.signed/f.txt` — the file's own package is dropped, not the `filegroup`'s |
+| File from another repository | `paths.bzl` (`@dep//lib:paths.bzl`) | `s.signed/paths.bzl` |
+| Directory | `my/pkg/helloworld/` with `mytest.txt`, `mytest.json` (`//my/pkg:helloworld`) | `s.signed/helloworld/mytest.txt`, `s.signed/helloworld/mytest.json` (one directory output) |
+| Directory as the only source, `flatten_single_directory = True` | `my/pkg/helloworld/` (`//my/pkg:helloworld`) | `s.signed/mytest.txt`, `s.signed/mytest.json` (`s.signed/` is the one output) |
+| Directory with other sources, `flatten_single_directory = True` | `helloworld/` and `app.exe` | not flattened: `s.signed/helloworld/`, `s.signed/app.exe` |
+| `out = "dist"` | `my/pkg/app.exe` (`//my/pkg:app`) | `dist/app.exe` |
+| Two sources with the same remaining path | `a/cfg.json` (`//a:cfg.json`), `b/cfg.json` (`//b:cfg.json`) | build fails |
+| File no target produced, such as `ctx.info_file` | `bazel-out/stable-status.txt` (no owner) | build fails |
 
 Signing with a detached signature adds files, because that is what such a
 signature is: a source signed with `cosign sign-blob` is accompanied by its
