@@ -273,13 +273,29 @@ def expand_argfiles(argv: Sequence[str], _depth: int = 0) -> list:
     return out
 
 
+def long_path(path: str) -> str:
+    """Spells `path` so Windows file APIs accept it beyond MAX_PATH.
+
+    Other platforms have no such limit and get `path` back unchanged.
+    """
+
+    if os.name != "nt":
+        return path
+    path = os.path.abspath(path)
+    if path.startswith("\\\\?\\"):
+        return path
+    if path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + path[2:]
+    return "\\\\?\\" + path
+
+
 def replace_path(src: str, dst: str) -> None:
     """Moves `src` onto `dst`, replacing whatever is already there.
 
-    Used for in-place signing, where the signer cannot write to its own input
-    and the result therefore has to be produced beside it and moved over.
+    Used to deliver results signed in scratch space, so `dst` may be long.
     """
 
+    dst = long_path(dst)
     dst_path = pathlib.Path(dst)
     if dst_path.is_dir() and not dst_path.is_symlink():
         shutil.rmtree(dst_path)
@@ -363,7 +379,7 @@ def resolve_template(
 
 
 def ensure_parent(path: str) -> None:
-    pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+    pathlib.Path(long_path(path)).parent.mkdir(parents=True, exist_ok=True)
 
 
 def is_pem_certificate(path: str) -> bool:
@@ -531,7 +547,26 @@ def passthrough(src: str, out: str) -> None:
         # preserving them would leave the output tree pointing at paths that do
         # not outlive the action.
         shutil.copytree(src, out, symlinks=False)
-        for root, dirs, files in os.walk(out):
+        make_writable(out)
+        return
+    ensure_parent(out)
+    shutil.copy2(src, out)
+    make_writable(out)
+
+
+def make_writable(path: str) -> None:
+    """Grants the owner write access to `path` and, for a directory, its contents.
+
+    Signers can copy the read-only permissions Bazel gives action inputs onto
+    what they write, and Windows refuses to delete or replace a read-only
+    file.
+    """
+
+    top = pathlib.Path(path)
+    if top.is_symlink():
+        return
+    if top.is_dir():
+        for root, dirs, files in os.walk(path):
             for dname in dirs:
                 dpath = pathlib.Path(root) / dname
                 dpath.chmod(dpath.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
@@ -539,13 +574,9 @@ def passthrough(src: str, out: str) -> None:
                 fpath = pathlib.Path(root) / fname
                 if not fpath.is_symlink():
                     fpath.chmod(fpath.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR)
-        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
-        return
-    ensure_parent(out)
-    shutil.copy2(src, out)
-    out_path = pathlib.Path(out)
-    if not out_path.is_symlink():
-        out_path.chmod(out_path.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR)
+        top.chmod(top.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
+    else:
+        top.chmod(top.stat().st_mode | stat.S_IWUSR | stat.S_IRUSR)
 
 
 def render_cert_material(
@@ -1364,6 +1395,35 @@ def sign_one(
     )
 
 
+def sign_staged(*, outfile: str, tmpdir: str, **kwargs) -> None:
+    """Runs `sign_one` against a short scratch path, then moves the results.
+
+    Declared outputs nest a source's whole path under the target's output
+    directory, which can exceed Windows' MAX_PATH; native signers such as
+    osslsigncode cannot write there. Signing into scratch space keeps every
+    signer on a short path, and the results (the artifact and any `.sig` /
+    `.bundle.json` beside it) are moved into place afterwards by this tool,
+    which can write long paths. It also means no signer is ever asked to
+    write over its own input.
+    """
+
+    stage = pathlib.Path(tempfile.mkdtemp(prefix="s", dir=tmpdir or None))
+    try:
+        sign_one(
+            outfile=str(stage / pathlib.Path(outfile).name),
+            tmpdir=tmpdir,
+            **kwargs,
+        )
+        out_parent = pathlib.Path(outfile).parent
+        for produced in stage.iterdir():
+            # Moving to another drive copies and then deletes, which Windows
+            # refuses for the read-only files some signers write.
+            make_writable(str(produced))
+            replace_path(str(produced), str(out_parent / produced.name))
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
 def plan_signature(
     *,
     signer: str,
@@ -1948,39 +2008,28 @@ def sign_mode(args: argparse.Namespace) -> None:
                 raise SystemExit(
                     "sign_tool: --in {!r} does not exist".format(infile)
                 )
+            # Staging gives every signer its own output path, so this also
+            # serves in-place requests, where --out is omitted or names --in.
             outfile = args.out or infile
-            in_place = os.path.realpath(outfile) == os.path.realpath(infile)
 
-            # No signer supports reading and writing the same path, so an
-            # in-place request is served by signing to scratch space and
-            # moving the result over the original afterwards.
-            target = outfile
-            if in_place:
-                staging = pathlib.Path(tmpdir) / "in-place"
-                staging.mkdir(parents=True, exist_ok=True)
-                target = str(staging / pathlib.Path(infile).name)
-
-            sign_one(
+            sign_staged(
                 tool_mode=args.tool,
                 relpath=infile,
                 infile=infile,
-                outfile=target,
+                outfile=outfile,
                 args=args,
                 tmpdir=tmpdir,
                 cert_path=cert_path,
                 password=password,
                 identity=identity,
             )
-
-            if in_place:
-                replace_path(target, outfile)
             return
 
         rel_src_rows = load_rel_src_manifest(args.rel_src_manifest)
         pathlib.Path(args.out_dir).mkdir(parents=True, exist_ok=True)
         for relpath, src, signer in rel_src_rows:
             out = str(pathlib.Path(args.out_dir) / relpath)
-            sign_one(
+            sign_staged(
                 tool_mode=args.tool,
                 signer=signer,
                 relpath=relpath,

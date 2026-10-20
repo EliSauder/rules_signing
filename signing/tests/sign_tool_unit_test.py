@@ -1652,6 +1652,58 @@ class SignToolUnitTest(unittest.TestCase):
                 sign_tool.expand_argfiles(["--args-file=" + str(loop)])
             self.assertIn("nested more than", str(ctx.exception))
 
+    def test_signers_write_to_a_short_path_and_results_reach_a_long_one(self) -> None:
+        # Issue #38: osslsigncode cannot create an output path beyond Windows'
+        # MAX_PATH, and declared outputs nest a source's whole path, so
+        # signers are handed a short scratch path and the artifact plus any
+        # sidecar is moved to the declared path afterwards.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scratch = root / "t"
+            scratch.mkdir()
+            infile = root / "app.exe"
+            infile.write_bytes(b"MZ")
+            outfile = root.joinpath(*(["d" * 60] * 5), "app.exe")
+            self.assertGreater(len(str(outfile)), 260)
+
+            seen = []
+
+            def fake_sign_one(*, outfile, **_kwargs):
+                seen.append(outfile)
+                pathlib.Path(outfile).write_bytes(b"MZ-signed")
+                pathlib.Path(outfile + ".sig").write_text("sig\n", encoding="utf-8")
+                # rcodesign copies the read-only mode of Bazel's inputs onto its
+                # output, which Windows then refuses to delete after a move
+                # across drives copies it.
+                os.chmod(outfile, stat.S_IRUSR)
+
+            with mock.patch.object(sign_tool, "sign_one", side_effect=fake_sign_one):
+                sign_tool.sign_staged(
+                    tool_mode="auto",
+                    relpath="app.exe",
+                    infile=str(infile),
+                    outfile=str(outfile),
+                    args=self._args(),
+                    tmpdir=str(scratch),
+                    cert_path="",
+                    password="",
+                    identity="",
+                )
+
+            self.assertEqual(len(seen), 1)
+            self.assertTrue(seen[0].startswith(str(scratch)))
+            self.assertEqual(pathlib.Path(seen[0]).name, "app.exe")
+            self.assertLess(len(seen[0]), len(str(outfile)))
+            final = pathlib.Path(sign_tool.long_path(str(outfile)))
+            self.assertEqual(final.read_bytes(), b"MZ-signed")
+            self.assertTrue(final.stat().st_mode & stat.S_IWUSR)
+            self.assertEqual(
+                pathlib.Path(sign_tool.long_path(str(outfile) + ".sig")).read_text(encoding="utf-8"),
+                "sig\n",
+            )
+            self.assertEqual(list(scratch.iterdir()), [])
+            shutil.rmtree(sign_tool.long_path(str(root / ("d" * 60))))
+
     def test_single_file_mode_signs_in_place_by_default(self) -> None:
         # !uninstfinalize hands over a path and expects the file at that same
         # path to come back signed, so no signer may be given input == output.
