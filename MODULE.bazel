@@ -6,7 +6,7 @@ module(
 bazel_dep(name = "rules_python", version = "2.4.6")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "codesign.bzl", version = "0.0.13")
-bazel_dep(name = "package_metadata", version = "0.0.13")
+bazel_dep(name = "package_metadata", version = "0.0.15")
 
 # Used only by this module's own tests: `rules_cc` cross-compiles the Mach-O/PE
 # fixtures and `rules_oci` builds the `oci_image` under test. Neither is
