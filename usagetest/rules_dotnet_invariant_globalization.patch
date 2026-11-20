@@ -1,0 +1,11 @@
+--- a/dotnet/private/rules/csharp/actions/csharp_assembly.bzl
++++ b/dotnet/private/rules/csharp/actions/csharp_assembly.bzl
+@@ -531,7 +531,8 @@
+             toolchain.csharp_compiler.files_to_run.executable.path,
+             args,
+         ],
+         env = {
+             "DOTNET_CLI_HOME": toolchain.runtime.files_to_run.executable.dirname,
++            "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT": "1",
+         },
+     )
