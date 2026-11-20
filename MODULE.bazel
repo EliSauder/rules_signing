@@ -25,7 +25,7 @@ bazel_dep(name = "bazel_skylib", version = "1.9.2", dev_dependency = True)
 # maybe_stamp) used by rules that embed workspace status into their outputs,
 # so rules_signing follows the same convention as the rest of the ecosystem
 # instead of reinventing it.
-bazel_dep(name = "bazel_lib", version = "3.7.2")
+bazel_dep(name = "bazel_lib", version = "3.8.0")
 
 # Builds the strong-name key converter behind `certificate_snk` using
 # rules_dotnet's hermetic .NET toolchain.
