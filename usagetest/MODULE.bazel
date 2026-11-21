@@ -8,6 +8,15 @@ bazel_dep(name = "rules_signing", version = "0.0.1")
 bazel_dep(name = "rules_oci", version = "2.3.0")
 bazel_dep(name = "rules_python", version = "2.3.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.2", dev_dependency = True)
+bazel_dep(name = "rules_dotnet", version = "0.22.2", dev_dependency = True)
+
+single_version_override(
+    module_name = "rules_dotnet",
+    version = "0.22.2",
+    patches = ["@//:rules_dotnet_invariant_globalization.patch"],
+    patch_strip = 1,
+)
+
 rules_python_config = use_extension("@rules_python//python/extensions:config.bzl", "config")
 rules_python_config.explicit_init_py(default = True)
 

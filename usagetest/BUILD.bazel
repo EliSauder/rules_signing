@@ -12,6 +12,8 @@ load(
 )
 load(":toolchain_test.bzl", "missing_codesign_test", "missing_jarsigner_test")
 
+exports_files(["rules_dotnet_invariant_globalization.patch"])
+
 genrule(
     name = "unsigned_dmg",
     outs = ["unsigned.dmg"],
