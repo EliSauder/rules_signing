@@ -47,7 +47,7 @@ bazel_dep(name = "hermetic_cc_toolchain", version = "4.3.0", dev_dependency = Tr
 # Exercises the `not_native()` rows in the binary-kinds registry against a
 # real rule rather than a hypothesis: `sh_binary` produces a launcher script,
 # never a native binary, on every platform this suite runs on.
-bazel_dep(name = "rules_shell", version = "0.8.0", dev_dependency = True)
+bazel_dep(name = "rules_shell", version = "0.10.0", dev_dependency = True)
 
 # kt_jvm_binary is a JVM launcher like java_binary, never a native binary --
 # rules_kotlin, rules_scala and every other JVM ruleset share that shape.
